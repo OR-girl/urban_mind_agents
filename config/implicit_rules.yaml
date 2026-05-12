@@ -1,0 +1,383 @@
+# SmartRoute Agent 隐式推理规则配置
+# 版本: v1.0
+#
+# 规则格式说明：
+# - id: 规则唯一标识
+# - condition: 触发条件（支持嵌套字段路径，如 party.composition）
+# - actions: 触发后执行的动作（append/set/default_if_empty/max）
+# - description: 规则说明
+# - priority: 规则优先级（数字越小优先级越高）
+# - enabled: 是否启用
+
+rules:
+  # ============================================
+  # 人员构成相关规则
+  # ============================================
+  - id: elder_walk_limit
+    priority: 1
+    enabled: true
+    condition:
+      field: party.composition
+      contains: elder
+    actions:
+      - field: preferences.avoid
+        append: 长距离步行
+      - field: preferences.avoid
+        append: 爬山
+      - field: preferences.avoid
+        append: 台阶多的景点
+      - field: temporal.duration_hours
+        max: 7.0
+      - field: preferences.nice_to_have
+        append: 无障碍设施
+      - field: preferences.nice_to_have
+        append: 可休息场所
+    description: 有老人时限制步行强度和活动时长
+
+  - id: toddler_indoor
+    priority: 1
+    enabled: true
+    condition:
+      field: party.child_ages
+      any_less_than: 6
+    actions:
+      - field: preferences.nice_to_have
+        append: 室内场所
+      - field: preferences.nice_to_have
+        append: 母婴室
+      - field: preferences.avoid
+        append: 长时间排队
+      - field: preferences.avoid
+        append: 嘈杂环境
+      - field: preferences.themes
+        append: 亲子友好
+    description: 有幼儿时优先室内场所和亲子设施
+
+  - id: child_teen_activity
+    priority: 2
+    enabled: true
+    condition:
+      field: party.composition
+      contains: child
+    actions:
+      - field: preferences.nice_to_have
+        append: 游乐设施
+      - field: preferences.nice_to_have
+        append: 互动体验
+      - field: preferences.themes
+        append: 亲子活动
+    description: 有儿童时增加亲子活动相关推荐
+
+  - id: large_group_logistics
+    priority: 2
+    enabled: true
+    condition:
+      field: party.size
+      greater_than: 8
+    actions:
+      - field: preferences.nice_to_have
+        append: 大桌餐厅
+      - field: preferences.avoid
+        append: 小众拥挤场所
+      - field: temporal.flexibility
+        set: flexible
+    description: 大团体出行时优先考虑容纳能力
+
+  # ============================================
+  # 意图类型相关规则
+  # ============================================
+  - id: business_strict_time
+    priority: 1
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [出差, 商务, 会议, 客户]
+    actions:
+      - field: intent_type
+        set: business
+      - field: temporal.flexibility
+        set: strict
+      - field: preferences.nice_to_have
+        append: 商务宴请
+      - field: preferences.nice_to_have
+        append: 安静环境
+      - field: budget.level
+        default_if_empty: mid
+    description: 商务场景时间严格，优先商务友好场所
+
+  - id: date_scene_upgrade
+    priority: 1
+    enabled: true
+    condition:
+      field: intent_type
+      equals: date
+    actions:
+      - field: preferences.themes
+        append: 浪漫氛围
+      - field: preferences.nice_to_have
+        append: 环境优美
+      - field: preferences.nice_to_have
+        append: 安静私密
+      - field: budget.level
+        default_if_empty: mid
+    description: 约会场景自动提升氛围要求
+
+  - id: family_outing
+    priority: 1
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [带父母, 带爸妈, 全家, 家庭出游]
+    actions:
+      - field: intent_type
+        set: family
+      - field: preferences.themes
+        append: 家庭活动
+      - field: preferences.nice_to_have
+        append: 老人友好
+    description: 家庭出游场景识别
+
+  - id: food_tour_intent
+    priority: 2
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [美食, 吃货, 吃遍, 探店, 美食之旅]
+    actions:
+      - field: intent_type
+        set: food_tour
+      - field: preferences.themes
+        append: 美食探索
+      - field: temporal.meal_preferences
+        append: 多餐安排
+    description: 美食探索场景识别
+
+  - id: nature_outdoor
+    priority: 2
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [爬山, 徒步, 自然风光, 户外, 森林, 公园]
+    actions:
+      - field: intent_type
+        set: nature
+      - field: preferences.themes
+        append: 自然风光
+      - field: preferences.nice_to_have
+        append: 户外活动
+    description: 自然户外场景识别
+
+  - id: culture_history
+    priority: 2
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [博物馆, 历史, 文化, 古迹, 寺庙, 人文]
+    actions:
+      - field: intent_type
+        set: culture
+      - field: preferences.themes
+        append: 文化历史
+      - field: preferences.nice_to_have
+        append: 文化讲解
+    description: 文化历史场景识别
+
+  # ============================================
+  # 时间相关规则
+  # ============================================
+  - id: default_duration
+    priority: 3
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [一日游, 全天, 玩一天]
+    actions:
+      - field: temporal.duration_hours
+        set: 8.0
+      - field: temporal.start_time
+        default_if_empty: "09:00"
+      - field: temporal.end_time
+        default_if_empty: "17:00"
+    description: 一日游默认8小时时长
+
+  - id: half_day_short
+    priority: 3
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [半天, 半日, 几个小时]
+    actions:
+      - field: temporal.duration_hours
+        set: 4.0
+      - field: temporal.start_time
+        default_if_empty: "09:00"
+      - field: temporal.end_time
+        default_if_empty: "13:00"
+    description: 半天游默认4小时时长
+
+  - id: afternoon_session
+    priority: 3
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [下午, 下午茶]
+    actions:
+      - field: temporal.start_time
+        default_if_empty: "14:00"
+      - field: temporal.duration_hours
+        default_if_empty: 3.0
+    description: 下午时段默认设置
+
+  - id: evening_session
+    priority: 3
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [晚上, 夜游, 夜市]
+    actions:
+      - field: temporal.start_time
+        default_if_empty: "18:00"
+      - field: temporal.duration_hours
+        default_if_empty: 3.0
+      - field: preferences.themes
+        append: 夜间活动
+    description: 夜间时段默认设置
+
+  # ============================================
+  # 预算相关规则
+  # ============================================
+  - id: budget_implicit_low
+    priority: 4
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [省钱, 便宜, 经济, 实惠, 预算有限]
+    actions:
+      - field: budget.level
+        set: budget
+      - field: budget.per_person
+        default_if_empty: 100
+    description: 预算敏感场景识别
+
+  - id: budget_implicit_high
+    priority: 4
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [高端, 奢华, 不差钱, 高档, 品质]
+    actions:
+      - field: budget.level
+        set: premium
+      - field: budget.per_person
+        default_if_empty: 500
+    description: 高端消费场景识别
+
+  # ============================================
+  # POI 偏好相关规则
+  # ============================================
+  - id: niche_preference
+    priority: 3
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [小众, 冷门, 不网红, 人少, 安静]
+    actions:
+      - field: preferences.poi_style
+        set: niche
+      - field: preferences.avoid
+        append: 网红景点
+    description: 小众偏好识别
+
+  - id: popular_preference
+    priority: 3
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [热门, 必去, 经典, 网红, 知名]
+    actions:
+      - field: preferences.poi_style
+        set: popular
+      - field: preferences.themes
+        append: 热门景点
+    description: 热门偏好识别
+
+  - id: cuisine_explicit
+    priority: 2
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any_regex:
+        - .*(杭帮菜|川菜|粤菜|湘菜|日料|韩料|西餐|火锅|烧烤).*
+    actions:
+      - field: preferences.cuisine_types
+        append_from_match: true
+    description: 菜系偏好提取（正则匹配）
+
+  # ============================================
+  # 特殊需求规则
+  # ============================================
+  - id: wheelchair_access
+    priority: 1
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [轮椅, 残疾, 行动不便, 残障]
+    actions:
+      - field: party.special_needs
+        append: wheelchair
+      - field: preferences.avoid
+        append: 台阶
+      - field: preferences.nice_to_have
+        append: 无障碍通道
+      - field: preferences.nice_to_have
+        append: 电梯
+    description: 无障碍需求识别
+
+  - id: pet_friendly_check
+    priority: 3
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [带宠物, 带狗, 带猫]
+    actions:
+      - field: party.special_needs
+        append: pet
+      - field: preferences.nice_to_have
+        append: 宠物友好
+      - field: preferences.avoid
+        append: 禁止宠物场所
+    description: 宠物同行需求识别
+
+  - id: vegetarian_diet
+    priority: 2
+    enabled: true
+    condition:
+      field: raw_query
+      contains_any: [素食, 素菜, 不吃肉, 清淡]
+    actions:
+      - field: preferences.cuisine_types
+        append: 素食
+      - field: preferences.avoid
+        append: 纯肉类餐厅
+    description: 素食偏好识别
+
+# ============================================
+# 规则执行配置
+# ============================================
+execution:
+  # 规则应用顺序
+  order: priority
+
+  # 规则冲突处理
+  conflict_resolution: priority_first
+
+  # 最大规则触发数
+  max_triggered_rules: 10
+
+  # 条件匹配配置
+  condition_matching:
+    # 字段不存在时的默认行为
+    field_missing_default: false
+
+    # contains_any 匹配阈值（任一关键词匹配即触发）
+    contains_any_threshold: 1

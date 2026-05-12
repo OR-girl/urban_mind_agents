@@ -1,0 +1,296 @@
+# SmartRoute Agent 系统配置文件
+# 版本: v1.0
+
+# ============================================
+# LLM 配置
+# ============================================
+llm:
+  # 主供应商（按优先级排序）
+  providers:
+    - name: openai
+      priority: 1
+      models:
+        intent_extraction: gpt-4o
+        ugc_analysis: gpt-4o-mini
+        presentation: gpt-4o
+        fallback: gpt-4o
+      timeout_seconds: 10
+      max_retries: 3
+
+    - name: anthropic
+      priority: 2
+      models:
+        intent_extraction: claude-3-5-sonnet-20241022
+        presentation: claude-3-5-sonnet-20241022
+      timeout_seconds: 10
+      max_retries: 3
+
+    - name: qwen
+      priority: 3
+      models:
+        intent_extraction: qwen-max
+        ugc_analysis: qwen-plus
+      timeout_seconds: 10
+      max_retries: 3
+
+  # 成本控制
+  cost_control:
+    budget_per_request_yuan: 0.20
+    budget_alert_ratio: 1.2
+    circuit_breaker:
+      failure_threshold: 5
+      recovery_timeout_seconds: 60
+
+  # 温度参数
+  temperature:
+    intent_extraction: 0.1      # 低温度保证稳定性
+    ugc_analysis: 0.2
+    presentation: 0.7           # 高温度增加自然度
+
+# ============================================
+# Agent 配置
+# ============================================
+agents:
+  orchestrator:
+    session_ttl_seconds: 86400    # 24小时
+    max_parallel_agents: 5
+
+  intent:
+    confidence_threshold: 0.7
+    max_dialog_history_rounds: 3
+    implicit_rules_path: config/implicit_rules.yaml
+
+  profile:
+    long_term_weight: 0.7
+    short_term_weight: 0.3
+    cold_start_threshold: 5       # 历史行为少于5次视为冷启动
+    profile_vector_dim: 1024
+
+  retrieval:
+    # 多路召回配置
+    semantic:
+      top_k: 50
+      metric_type: COSINE
+      ef_search: 200
+
+    geo:
+      default_radius_km:
+        tour: 5.0
+        food_tour: 3.0
+        city_walk: 2.0
+        business: 3.0
+      max_radius_km: 20.0
+
+    collaborative:
+      top_k: 30
+
+    category:
+      enable: true
+
+    hot_fallback:
+      top_k: 20
+
+    # 粗排配置
+    coarse_rank:
+      model_path: models/coarse_ranker.txt
+      weights:
+        semantic: 0.35
+        profile_match: 0.30
+        popularity: 0.20
+        distance: 0.15
+
+    # 多样性重排
+    mmr:
+      lambda_param: 0.6
+      candidate_pool_size: 20
+
+  ugc_insight:
+    # 双通道路由
+    channel_router:
+      # 头部POI（评论数阈值）使用LLM通道
+      llm_threshold_reviews: 100
+      # 最大LLM通道POI数量
+      llm_max_pois: 5
+
+    # 缓存配置
+    cache:
+      ttl_seconds: 604800          # 7天
+      key_prefix: "ugc:poi:"
+
+    # 评论分析配置
+    analysis:
+      max_reviews_per_poi: 50
+      review_window_months: 3
+      min_confidence: 0.5
+
+    # NLP通道配置
+    nlp_channel:
+      sentiment_model: snownlp
+      keyword_top_k: 20
+
+    # 痛点聚类
+    clustering:
+      min_cluster_size: 3
+      eps: 0.3
+
+  route_planning:
+    # OR-Tools 配置
+    solver:
+      timeout_seconds: 2
+      first_solution_strategy: PATH_CHEAPEST_ARC
+      local_search_metaheuristic: GUIDED_LOCAL_SEARCH
+      max_waiting_minutes: 30
+
+    # 多方案配置
+    plans:
+      - name: "经典稳妥"
+        tagline: "兼顾体验与效率，适合首次到访"
+        weights:
+          travel: 0.3
+          wait: 0.2
+          experience: 0.4
+          cost: 0.1
+
+      - name: "避峰省时"
+        tagline: "规避排队高峰，时间利用率最高"
+        weights:
+          travel: 0.2
+          wait: 0.5
+          experience: 0.2
+          cost: 0.1
+
+      - name: "极致体验"
+        tagline: "不惜排队，追求最佳体验"
+        weights:
+          travel: 0.1
+          wait: 0.1
+          experience: 0.7
+          cost: 0.1
+
+    max_poi_overlap_ratio: 0.5
+
+    # 排队预测
+    queue_predictor:
+      model_path: models/queue_predictor.txt
+
+  presentation:
+    # 流式输出配置
+    streaming:
+      first_token_target_seconds: 2
+      chunk_size_tokens: 5
+
+    # 话术生成配置
+    personalization:
+      max_reason_length: 60
+      min_highlights: 2
+      max_highlights: 3
+
+# ============================================
+# 外部 API 配置
+# ============================================
+external_apis:
+  amap:
+    base_url: https://restapi.amap.com/v3
+    # 路线矩阵API
+    distance_matrix:
+      batch_size: 100
+      timeout_seconds: 5
+    # POI搜索API
+    poi_search:
+      batch_size: 50
+
+  dianping:
+    base_url: https://api.dianping.com/v1
+    # 评论拉取
+    reviews:
+      max_per_request: 100
+      timeout_seconds: 10
+
+  qweather:
+    base_url: https://api.qweather.com/v7
+    timeout_seconds: 3
+
+# ============================================
+# 数据库配置
+# ============================================
+database:
+  postgres:
+    pool_size: 10
+    max_overflow: 5
+    pool_timeout_seconds: 30
+
+  redis:
+    pool_size: 20
+    socket_timeout_seconds: 5
+
+  milvus:
+    connection_timeout_seconds: 10
+
+  elasticsearch:
+    request_timeout_seconds: 10
+
+# ============================================
+# 性能指标阈值
+# ============================================
+performance:
+  # 响应时间目标
+  latency_targets:
+    first_plan_p95_seconds: 8
+    adjust_p95_seconds: 3
+    stream_first_token_seconds: 2
+
+  # 吞吐量
+  throughput:
+    min_qps: 100
+    max_qps: 500
+
+  # 缓存命中率目标
+  cache_hit_rate:
+    ugc_target: 0.80
+    poi_target: 0.70
+
+# ============================================
+# 评测指标目标
+# ============================================
+evaluation_targets:
+  intent:
+    field_extraction_f1: 0.90
+    classification_accuracy: 0.92
+    implicit_rule_precision: 0.85
+    ambiguity_detection_error_rate: 0.10
+
+  retrieval:
+    recall_at_50: 0.95
+    diversity_categories_min: 5
+    personalization_ndcg_10: 0.75
+
+  ugc:
+    opinion_accuracy: 0.85
+    cache_hit_rate: 0.80
+
+  route:
+    business_hours_satisfaction_rate: 1.0
+    user_adoption_rate: 0.60
+    time_estimation_error_rate: 0.15
+    solve_time_p95_seconds: 2
+
+  presentation:
+    personalization_rate: 0.80
+    plan_overlap_rate_max: 0.50
+    user_read_completion_rate: 0.70
+
+# ============================================
+# 监控配置
+# ============================================
+monitoring:
+  opentelemetry:
+    service_name: smartroute-agent
+    sample_rate: 0.1
+
+  prometheus:
+    port: 9090
+
+  logging:
+    level: INFO
+    format: json
+    agents_log_enabled: true
