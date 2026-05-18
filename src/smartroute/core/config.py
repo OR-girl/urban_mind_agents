@@ -4,8 +4,13 @@ SmartRoute Agent 配置管理模块
 支持从环境变量和 YAML 配置文件加载配置
 """
 
+import os
 from pathlib import Path
 from typing import Any
+
+# 加载 .env 文件到环境变量
+from dotenv import load_dotenv
+_load_env_result = load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 import yaml
 from pydantic import Field
@@ -15,15 +20,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class LLMProviderSettings(BaseSettings):
     """LLM 供应商配置"""
 
-    openai_api_key: str = ""
-    openai_base_url: str = "https://api.openai.com/v1"
+    openai_api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    openai_base_url: str = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+    openai_model_default: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_DEFAULT", "glm-5"))
     openai_model_gpt4o: str = "gpt-4o"
     openai_model_gpt4o_mini: str = "gpt-4o-mini"
 
-    anthropic_api_key: str = ""
+    anthropic_api_key: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
     anthropic_model_claude: str = "claude-3-5-sonnet-20241022"
 
-    qwen_api_key: str = ""
+    qwen_api_key: str = Field(default_factory=lambda: os.getenv("QWEN_API_KEY", ""))
     qwen_base_url: str = "https://dashscope.aliyuncs.com/api/v1"
     qwen_model: str = "qwen-max"
 
@@ -117,6 +123,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="allow",
+        env_nested_delimiter="__",
     )
 
     llm: LLMProviderSettings = Field(default_factory=LLMProviderSettings)
