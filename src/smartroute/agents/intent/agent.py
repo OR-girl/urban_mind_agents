@@ -168,7 +168,7 @@ class IntentAgent(LLMBasedAgent):
 if __name__ == "__main__":
     import asyncio
     intent_agent = IntentAgent()
-    state = SystemState(raw_query="明天我一个人在武汉city walk,想去黄鹤楼和长江大桥")
+    state = SystemState(raw_query="明天上午一个人去西湖，下午去灵隐寺")
     result = asyncio.run(intent_agent.execute(state))
     for k, v in result.items():
         print(f"{k}: {v}")

@@ -29,6 +29,17 @@ class TimeFlexibility(str, Enum):
     FLEXIBLE = "flexible"       # 时间灵活
 
 
+class TimeSlot(str, Enum):
+    """时间段"""
+
+    MORNING = "morning"         # 上午 (08:00-12:00)
+    NOON = "noon"               # 中午 (11:00-14:00)
+    AFTERNOON = "afternoon"     # 下午 (14:00-18:00)
+    EVENING = "evening"         # 傍晚 (18:00-20:00)
+    NIGHT = "night"             # 晚上 (20:00-23:00)
+    ALL_DAY = "all_day"         # 全天
+
+
 class POIStyle(str, Enum):
     """POI 风格偏好"""
 
@@ -44,6 +55,41 @@ class BudgetLevel(str, Enum):
     MID = "mid"                 # 中档
     PREMIUM = "premium"         # 高档
     LUXURY = "luxury"           # 奢华
+
+
+class POIScheduleItem(BaseModel):
+    """POI 时间安排项"""
+
+    poi_name: str = Field(
+        ...,
+        description="POI 名称",
+    )
+    time_slot: TimeSlot | None = Field(
+        default=None,
+        description="时间段：morning/noon/afternoon/evening/night",
+    )
+    start_time: str | None = Field(
+        default=None,
+        description="期望开始时间（HH:MM）",
+    )
+    duration_minutes: int | None = Field(
+        default=None,
+        description="期望停留时长（分钟）",
+    )
+    sequence: int | None = Field(
+        default=None,
+        description="访问顺序（用户明确指定的先后顺序，如'先去A再去B'，A的sequence=1，B的sequence=2）。如果用户没有明确提到顺序，则不填写",
+    )
+    priority: int = Field(
+        default=1,
+        ge=1,
+        le=3,
+        description="优先级：1=必须去，2=想去，3=可选",
+    )
+    note: str | None = Field(
+        default=None,
+        description="备注说明",
+    )
 
 
 class SpatialConstraint(BaseModel):
@@ -199,6 +245,10 @@ class IntentResult(BaseModel):
     budget: BudgetInfo = Field(
         default_factory=BudgetInfo,
         description="预算信息",
+    )
+    poi_schedule: list[POIScheduleItem] = Field(
+        default_factory=list,
+        description="POI 时间安排列表（用户明确指定时间段的 POI）",
     )
     ambiguity_flags: list[str] = Field(
         default_factory=list,

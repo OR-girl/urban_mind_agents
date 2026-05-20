@@ -9,12 +9,13 @@ from datetime import datetime
 from typing import Any
 
 from smartroute.schemas.profile import UserProfile, CuisinePreference
+from smartroute.services.profile.mock_service import get_mock_profile_service
 
 
 class ProfileBuilder:
     """
     画像构建器
-    
+
     支持时间衰减加权计算长期偏好
     """
 
@@ -28,24 +29,20 @@ class ProfileBuilder:
         self.short_weight = short_weight
         self.decay_lambda = decay_lambda
         self._embedding_service = None
+        self._mock_service = get_mock_profile_service()
 
     async def load_long_term_profile(self, user_id: str) -> UserProfile:
         """
         加载长期画像
-        
+
         Args:
             user_id: 用户ID
-            
+
         Returns:
             UserProfile
         """
-        # TODO: 实际实现需要从 Feast 特征服务加载
-        # 这里返回一个模拟画像用于框架完整性
-        return UserProfile(
-            user_id=user_id,
-            is_cold_start=True,  # 默认为冷启动
-            confidence=0.5,
-        )
+        # 使用本地 Mock 服务生成画像
+        return self._mock_service.generate_profile(user_id)
 
     def compute_cuisine_preference(
         self,

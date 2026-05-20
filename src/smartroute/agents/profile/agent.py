@@ -183,3 +183,17 @@ class ProfileAgent(CacheableAgent):
             return profile
 
         return await self.builder.load_long_term_profile(user_id)
+
+if __name__ == "__main__":
+    import asyncio
+
+    agent = ProfileAgent()
+    state = SystemState(
+        user_id="user001",
+        intent=None,
+        dialog_history=[],
+    )
+    result = asyncio.run(agent.execute(state))
+    for key, value in result.items():
+        print(f"{key}: {value}")
+
