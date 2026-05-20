@@ -10,7 +10,16 @@ Intent Agent - 意图识别Agent主类
 
 from datetime import datetime
 from typing import Any
+import sys
+from pathlib import Path
 
+# 添加项目根目录到 Python 路径
+project_root = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(project_root / "src"))
+
+# 设置 .env 文件的绝对路径
+import os
+os.chdir(project_root)
 from smartroute.agents.base import LLMBasedAgent
 from smartroute.agents.intent.extractor import SlotExtractor
 from smartroute.agents.intent.rules import ImplicitRuleEngine
@@ -47,40 +56,64 @@ class IntentAgent(LLMBasedAgent):
     async def execute(self, state: SystemState) -> dict[str, Any]:
         """
         执行意图识别
-        
+
         Args:
             state: 系统状态
-            
+
         Returns:
             包含 IntentResult 的字典
         """
         current_date = datetime.now().strftime("%Y-%m-%d")
-        
+        from smartroute.core.config import get_settings
+        settings = get_settings()
+
         # 合并对话历史
         dialog_history = state.dialog_history[-self.get_config_value("max_dialog_history_rounds", 3):]
-        
-        # 槽位抽取
+
+        # 构建 Prompt 和 Function Schema
+        prompt = self.extractor.build_prompt(
+            query=state.raw_query,
+            dialog_history=dialog_history,
+            current_date=current_date,
+            request_type=state.request_type,
+        )
+        function_schema = self.extractor.get_function_schema()
+
+        # 调用 LLM Function Calling（统一由 Agent 管理）
         try:
-            intent = await self.extractor.extract(
-                query=state.raw_query,
-                dialog_history=dialog_history,
-                current_date=current_date,
-                request_type=state.request_type,
-                existing_intent=state.intent,  # 多轮增量合并
+            result = await self.call_llm_with_function(
+                messages=[{"role": "user", "content": prompt}],
+                function_schema=function_schema,
+                temperature=0.1,
+                model =  settings.llm.openai_model_default
             )
+
         except Exception as e:
             self.logger.error("slot_extraction_failed", error=str(e))
             raise IntentExtractionError(
                 message=f"意图抽取失败: {e}",
-                code="INTENT_EXTRACTION_ERROR",
+                raw_query=state.raw_query,
             ) from e
+
+        print("LLM Response:\n", result)
+
+        # 解析结果
+        intent = self.extractor.parse_result(
+            result=result,
+            query=state.raw_query,
+            request_type=state.request_type,
+            existing_intent=state.intent,
+        )
+        print("槽位抽取Intent:\n", intent.model_dump())
 
         # 隐式推理
         intent = self.rule_engine.apply(intent)
-        
+        print("隐式推理Intent:\n", intent.model_dump())
+
         # 歧义检测
         need_clarify, question = self.ambiguity_detector.detect(intent)
-        
+        print("歧义检测Intent:\n", intent.model_dump())
+
         return {
             "intent": intent.model_dump(),
             "clarification_needed": need_clarify,
@@ -95,20 +128,49 @@ class IntentAgent(LLMBasedAgent):
     ) -> IntentResult:
         """
         多轮增量意图合并
-        
+
         Args:
             base_intent: 基础意图
             new_query: 新输入
             operation_type: ADD/REPLACE/REMOVE
-            
+
         Returns:
-            合合后的 IntentResult
+            合并后的 IntentResult
         """
-        new_intent = await self.extractor.extract(
+        from smartroute.core.config import get_settings
+        settings = get_settings()
+
+        current_date = datetime.now().strftime("%Y-%m-%d")
+
+        prompt = self.extractor.build_prompt(
             query=new_query,
             dialog_history=[],
-            current_date=datetime.now().strftime("%Y-%m-%d"),
+            current_date=current_date,
             request_type="MODIFY",
         )
-        
+        function_schema = self.extractor.get_function_schema()
+
+        result = await self.call_llm_with_function(
+            messages=[{"role": "user", "content": prompt}],
+            function_schema=function_schema,
+            temperature=0.1,
+            model =  settings.llm.openai_model_default
+        )
+        print( result)
+        new_intent = self.extractor.parse_result(
+            result=result,
+            query=new_query,
+            request_type="MODIFY",
+        )
+
         return self.extractor.merge_incremental(base_intent, new_intent, operation_type)
+
+if __name__ == "__main__":
+    import asyncio
+    intent_agent = IntentAgent()
+    state = SystemState(raw_query="明天我一个人在武汉city walk,想去黄鹤楼和长江大桥")
+    result = asyncio.run(intent_agent.execute(state))
+    for k, v in result.items():
+        print(f"{k}: {v}")
+
+

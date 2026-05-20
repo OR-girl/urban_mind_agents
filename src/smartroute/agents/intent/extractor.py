@@ -1,10 +1,10 @@
 """
 Slot Extractor - 槽位抽取器
 
-使用 LLM Function Calling 从用户输入中抽取结构化槽位
+负责构建意图抽取的 Prompt 和解析 LLM 返回结果
+LLM 调用由上层 Agent 统一管理
 """
 
-import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -35,7 +35,6 @@ INTENT_EXTRACTION_PROMPT = """
 
 用户输入：{user_query}
 """
-
 INTENT_FUNCTION_SCHEMA = {
     "name": "extract_intent",
     "description": "提取用户出行意图的结构化信息",
@@ -111,55 +110,74 @@ INTENT_FUNCTION_SCHEMA = {
 }
 
 
+
 class SlotExtractor:
     """
     槽位抽取器
-    
-    使用 LLM Function Calling 抽取结构化意图
+
+    负责构建 Prompt 和解析结果，不直接调用 LLM
     """
 
-    def __init__(self) -> None:
-        self._llm_router = None
-
-    async def extract(
+    def build_prompt(
         self,
         query: str,
         dialog_history: list[dict[str, Any]],
         current_date: str,
         request_type: str = "NEW",
-        existing_intent: dict[str, Any] | None = None,
-    ) -> IntentResult:
+    ) -> str:
         """
-        抽取意图槽位
-        
+        构建意图抽取的 Prompt
+
         Args:
             query: 用户输入
             dialog_history: 对话历史
             current_date: 当前日期
             request_type: 请求类型
-            existing_intent: 已有意图（多轮增量）
-            
+
         Returns:
-            IntentResult
+            构建好的 Prompt
         """
-        # 构建Prompt
         history_text = "\n".join([
             f"[{h.get('role', 'user')}]: {h.get('content', '')}"
             for h in dialog_history
         ]) if dialog_history else "无对话历史"
 
-        prompt = INTENT_EXTRACTION_PROMPT.format(
+        return INTENT_EXTRACTION_PROMPT.format(
             current_date=current_date,
             request_type=request_type,
             dialog_history=history_text,
             user_query=query,
         )
 
-        # 调用LLM Function Calling
-        result = await self._call_llm_function(prompt, INTENT_FUNCTION_SCHEMA)
+    def get_function_schema(self) -> dict[str, Any]:
+        """
+        获取 Function Calling Schema
 
-        # 解析结果
-        intent = self._parse_result(result)
+        Returns:
+            INTENT_FUNCTION_SCHEMA
+        """
+        return INTENT_FUNCTION_SCHEMA
+
+    def parse_result(
+        self,
+        result: dict[str, Any],
+        query: str,
+        request_type: str = "NEW",
+        existing_intent: dict[str, Any] | None = None,
+    ) -> IntentResult:
+        """
+        解析 LLM 返回结果
+
+        Args:
+            result: LLM Function Calling 返回的 JSON
+            query: 用户输入（用于检测操作类型）
+            request_type: 请求类型
+            existing_intent: 已有意图（多轮增量）
+
+        Returns:
+            IntentResult
+        """
+        intent = self._parse_to_intent(result, query)
 
         # 多轮增量合并
         if existing_intent and request_type in ("MODIFY", "CLARIFY"):
@@ -171,43 +189,14 @@ class SlotExtractor:
 
         return intent
 
-    async def _call_llm_function(
-        self,
-        prompt: str,
-        function_schema: dict[str, Any],
-    ) -> dict[str, Any]:
+    def _parse_to_intent(self, result: dict[str, Any], query: str) -> IntentResult:
         """
-        调用LLM Function Calling
-        
+        将 LLM 返回的 JSON 解析为 IntentResult
+
         Args:
-            prompt: 输入提示
-            function_schema: Function Schema
-            
-        Returns:
-            Function返回的JSON数据
-        """
-        # 延迟导入避免循环依赖
-        from smartroute.services.llm.router import LLMRouter
-        
-        if self._llm_router is None:
-            self._llm_router = LLMRouter()
+            result: Function 返回的 JSON
+            query: 用户原始输入
 
-        result = await self._llm_router.call_with_function(
-            messages=[{"role": "user", "content": prompt}],
-            function_schema=function_schema,
-            model="gpt-4o",  # 意图抽取使用高精度模型
-            temperature=0.1,
-        )
-
-        return result
-
-    def _parse_result(self, result: dict[str, Any]) -> IntentResult:
-        """
-        解析LLM返回结果
-        
-        Args:
-            result: Function返回的JSON
-            
         Returns:
             IntentResult
         """
@@ -254,16 +243,16 @@ class SlotExtractor:
             budget=budget,
             ambiguity_flags=result.get("ambiguity_flags", []),
             inferred_fields=result.get("inferred_fields", []),
-            raw_query=result.get("raw_query", ""),
+            raw_query=query,
         )
 
     def _resolve_relative_date(self, date_str: str) -> str:
         """
         解析相对日期
-        
+
         Args:
             date_str: 日期字符串
-            
+
         Returns:
             绝对日期 YYYY-MM-DD
         """
@@ -275,7 +264,6 @@ class SlotExtractor:
         relative_dates = {
             "今天": today,
             "明天": today + timedelta(days=1),
-            "后天": today + timedelta(days=2),
             "后天": today + timedelta(days=2),
         }
 
@@ -298,10 +286,10 @@ class SlotExtractor:
     def _detect_operation_type(self, query: str) -> str:
         """
         检测操作类型
-        
+
         Args:
             query: 用户输入
-            
+
         Returns:
             ADD/REPLACE/REMOVE
         """
@@ -326,14 +314,14 @@ class SlotExtractor:
     ) -> IntentResult:
         """
         多轮增量意图合并
-        
+
         Args:
             base_intent: 基础意图
             new_intent: 新意图
             operation_type: ADD/REPLACE/REMOVE
-            
+
         Returns:
-            合合后的 IntentResult
+            合并后的 IntentResult
         """
         base_dict = base_intent.model_dump()
         new_dict = new_intent.model_dump()
