@@ -4,7 +4,9 @@ SmartRoute Agent 基类模块
 定义所有 Agent 的通用接口和行为
 """
 
+import hashlib
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 from smartroute.core.config import get_settings
@@ -245,32 +247,27 @@ class CacheableAgent(BaseAgent):
     """
     支持缓存的 Agent 基类
 
-    提供 Redis 缓存的通用功能
+    使用本地 JSON 文件作为缓存存储（替代 Redis）
     """
+
+    # 缓存目录
+    CACHE_DIR = Path(__file__).parent.parent.parent.parent / ".cache"
 
     def __init__(self) -> None:
         super().__init__()
-        self._cache_client = None
         self._cache_ttl = 3600  # 默认 1 小时
+        self._ensure_cache_dir()
 
-    async def get_cache_client(self) -> Any:
-        """
-        获取 Redis 缓存客户端
+    def _ensure_cache_dir(self) -> None:
+        """确保缓存目录存在"""
+        if not self.CACHE_DIR.exists():
+            self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-        Returns:
-            Redis 客户端
-        """
-        if self._cache_client is None:
-            import redis.asyncio as redis
-            self._cache_client = redis.Redis(
-                host=settings.db.redis_host,
-                port=settings.db.redis_port,
-                password=settings.db.redis_password or None,
-                db=settings.db.redis_db,
-                decode_responses=True,
-            )
-
-        return self._cache_client
+    def _get_cache_file(self, key: str) -> Path:
+        """获取缓存文件路径"""
+        # 使用 hash 作为文件名，避免特殊字符问题
+        safe_key = hashlib.md5(key.encode()).hexdigest()
+        return self.CACHE_DIR / f"{safe_key}.json"
 
     async def get_cached(self, key: str) -> Any | None:
         """
@@ -280,19 +277,35 @@ class CacheableAgent(BaseAgent):
             key: 缓存键
 
         Returns:
-            缓存值，不存在返回 None
+            缓存值，不存在或过期返回 None
         """
         import json
+        import time
 
-        client = await self.get_cache_client()
-        data = await client.get(key)
+        cache_file = self._get_cache_file(key)
 
-        if data:
+        if not cache_file.exists():
+            self.logger.debug("cache_miss", key=key)
+            return None
+
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # 检查 TTL 过期
+            expire_at = data.get("expire_at", 0)
+            if time.time() > expire_at:
+                # 过期，删除文件
+                cache_file.unlink()
+                self.logger.debug("cache_expired", key=key)
+                return None
+
             self.logger.debug("cache_hit", key=key)
-            return json.loads(data)
+            return data.get("value")
 
-        self.logger.debug("cache_miss", key=key)
-        return None
+        except Exception as e:
+            self.logger.warning("cache_read_failed", key=key, error=str(e))
+            return None
 
     async def set_cached(
         self,
@@ -309,13 +322,25 @@ class CacheableAgent(BaseAgent):
             ttl: TTL（秒），默认使用 self._cache_ttl
         """
         import json
+        import time
 
-        client = await self.get_cache_client()
+        cache_file = self._get_cache_file(key)
         ttl = ttl or self._cache_ttl
 
-        await client.setex(key, ttl, json.dumps(value, ensure_ascii=False))
+        try:
+            data = {
+                "value": value,
+                "expire_at": time.time() + ttl,
+                "created_at": time.time(),
+            }
 
-        self.logger.debug("cache_set", key=key, ttl=ttl)
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+            self.logger.debug("cache_set", key=key, ttl=ttl)
+
+        except Exception as e:
+            self.logger.warning("cache_write_failed", key=key, error=str(e))
 
     async def delete_cached(self, key: str) -> None:
         """
@@ -324,10 +349,14 @@ class CacheableAgent(BaseAgent):
         Args:
             key: 缓存键
         """
-        client = await self.get_cache_client()
-        await client.delete(key)
+        cache_file = self._get_cache_file(key)
 
-        self.logger.debug("cache_deleted", key=key)
+        if cache_file.exists():
+            try:
+                cache_file.unlink()
+                self.logger.debug("cache_deleted", key=key)
+            except Exception as e:
+                self.logger.warning("cache_delete_failed", key=key, error=str(e))
 
 
 class VectorBasedAgent(BaseAgent):

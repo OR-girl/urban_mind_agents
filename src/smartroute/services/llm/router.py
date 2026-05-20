@@ -19,9 +19,9 @@ settings = get_settings()
 
 
 PROVIDER_CONFIGS = [
-    {"name": "openai", "priority": 1, "models": {"default": "gpt-4o"}},
-    {"name": "anthropic", "priority": 2, "models": {"default": "claude-3-5-sonnet-20241022"}},
-    {"name": "qwen", "priority": 3, "models": {"default": "qwen-max"}},
+    {"name": "openai", "priority": 1, "models": {"default": settings.llm.openai_model_default}},
+    {"name": "anthropic", "priority": 2, "models": {"default": settings.llm.anthropic_model_claude}},
+    {"name": "qwen", "priority": 3, "models": {"default": settings.llm.qwen_model}},
 ]
 
 
@@ -123,7 +123,7 @@ class LLMRouter:
             client = await self._get_openai_client()
 
             response = await client.chat.completions.create(
-                model=model or "gpt-4o",
+                model=model or settings.llm.openai_model_default,
                 messages=messages,
                 tools=[{
                     "type": "function",
@@ -189,6 +189,7 @@ class LLMRouter:
         if self._openai_client is None:
             self._openai_client = openai.AsyncOpenAI(
                 api_key=settings.llm.openai_api_key,
+                base_url=settings.llm.openai_base_url,
             )
         return self._openai_client
 
@@ -223,11 +224,34 @@ class LLMRouter:
         """
         降级：使用文本解析代替Function Calling
         """
+        # 安全地序列化 schema，避免 surrogate 字符问题
+        try:
+            schema_str = json.dumps(
+                function_schema['parameters'],
+                ensure_ascii=False,
+                indent=2
+            )
+        except UnicodeEncodeError:
+            # 如果出现编码问题，使用 ensure_ascii=True
+            schema_str = json.dumps(
+                function_schema['parameters'],
+                ensure_ascii=True,
+                indent=2
+            )
+
+        # 安全获取消息内容
+        user_content = ""
+        if messages and len(messages) > 0:
+            last_msg = messages[-1]
+            user_content = last_msg.get('content', '')
+            # 清理可能的 surrogate 字符
+            user_content = user_content.encode('utf-8', errors='replace').decode('utf-8')
+
         prompt = f"""
 请以JSON格式输出以下信息，严格按照给定的Schema：
-{json.dumps(function_schema['parameters'], ensure_ascii=False)}
+{schema_str}
 
-{messages[-1]['content']}
+用户输入：{user_content}
 """
         result = await self.call(
             messages=[{"role": "user", "content": prompt}],

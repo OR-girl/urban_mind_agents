@@ -16,6 +16,8 @@ from smartroute.schemas.intent import (
     PartyInfo,
     Preferences,
     BudgetInfo,
+    POIScheduleItem,
+    TimeSlot,
 )
 
 
@@ -27,6 +29,20 @@ INTENT_EXTRACTION_PROMPT = """
 2. 对于不确定的字段，留空而不是猜测
 3. 注意识别隐式约束（如"带老人"暗示步行限制）
 4. 日期如果是相对表达（"明天"、"这周六"），请转换为绝对日期
+5. 时间段关键词与时间推断（重要）：
+   - "上午" → time_slot=morning, start_time="08:00",end_time = "12:00"
+   - "中午" → time_slot=noon, start_time="11:00",end_time = "14:00"
+   - "下午" → time_slot=afternoon, start_time="14:00",end_time = "18:00"
+   - "傍晚/晚上" → time_slot=evening, start_time="18:00",end_time = "20:00"
+   - 如果用户说"上午去西湖"，poi_schedule中西湖的time_slot=morning, start_time="08:00",end_time = "12:00"
+   - 同时temporal.start_time也应该设置为08:00（根据最早的时间段推断）
+6. 如果用户明确指定了某个POI的时间段（如"上午去西湖，下午去灵隐寺"），必须记录在poi_schedule中，并推断对应的start_time
+7. POI先后顺序识别（重要）：
+   - 如果用户使用了顺序关键词（"先...然后..."、"先...再..."、"第一站...第二站..."等），必须记录sequence字段
+   - 例如："先去西湖，再去灵隐寺" → 西湖sequence=1，灵隐寺sequence=2
+   - 例如："第一站西湖，第二站灵隐寺，最后去浙大" → sequence分别为1、2、3
+   - 如果用户只是并列列举（如"去西湖和灵隐寺"），没有明确顺序词，则sequence留空（不填写）
+   - 不要根据时间段推断顺序（上午vs下午不代表用户有顺序偏好）
 
 当前日期：{current_date}
 请求类型：{request_type}
@@ -35,6 +51,7 @@ INTENT_EXTRACTION_PROMPT = """
 
 用户输入：{user_query}
 """
+
 INTENT_FUNCTION_SCHEMA = {
     "name": "extract_intent",
     "description": "提取用户出行意图的结构化信息",
@@ -57,7 +74,7 @@ INTENT_FUNCTION_SCHEMA = {
                 "properties": {
                     "city": {"type": "string", "description": "城市"},
                     "region": {"type": "string", "description": "区域/商圈"},
-                    "anchor_poi": {"type": "string", "description": "锚点POI"},
+                    "anchor_poi": {"type": "string", "description": "锚点POI（第一个目的地）"},
                     "radius_km": {"type": "number", "description": "搜索半径(km)"},
                     "exclude_areas": {"type": "array", "items": {"type": "string"}, "description": "排除区域"},
                 },
@@ -67,9 +84,9 @@ INTENT_FUNCTION_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "date": {"type": "string", "description": "日期(YYYY-MM-DD)"},
-                    "start_time": {"type": "string", "default": "09:00", "description": "出发时间"},
+                    "start_time": {"type": "string", "default": "09:00", "description": "出发时间（根据时间段推断，如'上午'则08:00）"},
                     "end_time": {"type": "string", "default": "18:00", "description": "结束时间"},
-                    "duration_hours": {"type": "number", "default": 8.0, "description": "总时长(小时)"},
+                    "duration_hours": {"type": "number", "default": 8.0, "description": "总时长(小时)，应当根据end_time和start_time计算得到"},
                     "flexibility": {"type": "string", "enum": ["strict", "flexible"], "default": "flexible"},
                     "meal_preferences": {"type": "array", "items": {"type": "string"}, "description": "用餐时段偏好"},
                 },
@@ -87,12 +104,29 @@ INTENT_FUNCTION_SCHEMA = {
             "preferences": {
                 "type": "object",
                 "properties": {
-                    "must_have": {"type": "array", "items": {"type": "string"}, "description": "必须包含的类型/主题"},
+                    "must_have": {"type": "array", "items": {"type": "string"}, "description": "必须包含的POI名称"},
                     "nice_to_have": {"type": "array", "items": {"type": "string"}, "description": "希望包含"},
                     "avoid": {"type": "array", "items": {"type": "string"}, "description": "明确排除"},
                     "themes": {"type": "array", "items": {"type": "string"}, "description": "主题标签"},
                     "cuisine_types": {"type": "array", "items": {"type": "string"}, "description": "菜系偏好"},
                     "poi_style": {"type": "string", "enum": ["popular", "niche", "balanced"], "description": "POI风格偏好"},
+                },
+            },
+            "poi_schedule": {
+                "type": "array",
+                "description": "用户明确指定时间段或顺序的POI安排",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "poi_name": {"type": "string", "description": "POI名称"},
+                        "time_slot": {"type": "string", "enum": ["morning", "noon", "afternoon", "evening", "night", "all_day"], "description": "时间段"},
+                        "start_time": {"type": "string", "description": "期望开始时间(HH:MM)。根据时间段推断：morning→08:00, noon→11:00, afternoon→14:00, evening→18:00, night→20:00"},
+                        "duration_minutes": {"type": "integer", "description": "期望停留时长(分钟)"},
+                        "sequence": {"type": "integer", "minimum": 1, "description": "访问顺序（仅当用户明确说'先去A再去B'时填写，如A的sequence=1，B的sequence=2。如果用户没有明确顺序，则不填写此字段）"},
+                        "priority": {"type": "integer", "minimum": 1, "maximum": 3, "default": 1, "description": "优先级：1=必须去，2=想去，3=可选"},
+                        "note": {"type": "string", "description": "备注"},
+                    },
+                    "required": ["poi_name"],
                 },
             },
             "budget": {
@@ -202,7 +236,11 @@ class SlotExtractor:
         """
         # 处理相对日期转换
         if result.get("spatial"):
-            spatial = SpatialConstraint(**result["spatial"])
+            spatial_data = result["spatial"]
+            # city 为 None 时使用默认值
+            if spatial_data.get("city") is None:
+                spatial_data["city"] = "未知"
+            spatial = SpatialConstraint(**spatial_data)
         else:
             spatial = SpatialConstraint(city="未知")
 
@@ -230,6 +268,42 @@ class SlotExtractor:
         else:
             budget = BudgetInfo()
 
+        # 解析 POI 时间安排
+        poi_schedule = []
+        if result.get("poi_schedule"):
+            for item in result["poi_schedule"]:
+                try:
+                    time_slot = None
+                    if item.get("time_slot"):
+                        time_slot = TimeSlot(item["time_slot"])
+
+                    # sequence 仅在用户明确指定顺序时才有值
+                    sequence = item.get("sequence") if "sequence" in item else None
+
+                    poi_schedule.append(
+                        POIScheduleItem(
+                            poi_name=item.get("poi_name", ""),
+                            time_slot=time_slot,
+                            start_time=item.get("start_time"),
+                            duration_minutes=item.get("duration_minutes"),
+                            sequence=sequence,
+                            priority=item.get("priority", 1),
+                            note=item.get("note"),
+                        )
+                    )
+                except Exception:
+                    # 忽略解析错误的项
+                    pass
+
+        # 如果 spatial.anchor_poi 为空，从 poi_schedule 推断（取第一个POI）
+        if spatial.anchor_poi is None and poi_schedule:
+            # 按sequence排序，取第一个；若无sequence则取列表第一个
+            sorted_schedule = sorted(
+                poi_schedule,
+                key=lambda x: x.sequence if x.sequence is not None else 999
+            )
+            spatial.anchor_poi = sorted_schedule[0].poi_name
+
         intent_type = IntentType(result.get("intent_type", "tour"))
         confidence = result.get("confidence", 0.5)
 
@@ -241,6 +315,7 @@ class SlotExtractor:
             party=party,
             preferences=preferences,
             budget=budget,
+            poi_schedule=poi_schedule,
             ambiguity_flags=result.get("ambiguity_flags", []),
             inferred_fields=result.get("inferred_fields", []),
             raw_query=query,
@@ -332,6 +407,12 @@ class SlotExtractor:
                 existing = base_dict["preferences"].get(key, [])
                 new_items = new_dict["preferences"].get(key, [])
                 base_dict["preferences"][key] = list(set(existing + new_items))
+
+            # 合并 poi_schedule：追加新的 POI 时间安排
+            existing_poi_names = {item.get("poi_name") for item in base_dict.get("poi_schedule", [])}
+            for new_item in new_dict.get("poi_schedule", []):
+                if new_item.get("poi_name") not in existing_poi_names:
+                    base_dict.setdefault("poi_schedule", []).append(new_item)
 
         elif operation_type == "REPLACE":
             # 替换模式：新字段覆盖已有字段
