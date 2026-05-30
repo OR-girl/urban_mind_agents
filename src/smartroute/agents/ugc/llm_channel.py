@@ -8,9 +8,11 @@ import json
 from typing import Any
 
 from smartroute.agents.base import LLMBasedAgent
+from smartroute.core.config import get_settings
 from smartroute.core.logging import get_logger
 from smartroute.schemas import UGCSentiment
 
+settings = get_settings()
 logger = get_logger("agent.ugc.llm_channel")
 
 

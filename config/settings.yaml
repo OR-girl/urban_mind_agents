@@ -10,10 +10,10 @@ llm:
     - name: openai
       priority: 1
       models:
-        intent_extraction: gpt-4o
-        ugc_analysis: gpt-4o-mini
-        presentation: gpt-4o
-        fallback: gpt-4o
+        intent_extraction: deepseek-v4-pro
+        ugc_analysis: deepseek-v4-flash
+        presentation: deepseek-v4-pro
+        fallback: deepseek-v4-pro
       timeout_seconds: 10
       max_retries: 3
 

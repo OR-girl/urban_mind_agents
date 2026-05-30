@@ -96,11 +96,12 @@ class AgentError(SmartRouteError):
 class IntentExtractionError(AgentError):
     """意图抽取异常"""
 
-    def __init__(self, message: str, raw_query: str | None = None) -> None:
+    def __init__(self, message: str, raw_query: str | None = None,
+                 code: str = "INTENT_EXTRACTION_ERROR") -> None:
         self.raw_query = raw_query
         super().__init__(
             message,
-            code="INTENT_EXTRACTION_ERROR",
+            code=code,
             agent_name="intent",
         )
 

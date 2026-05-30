@@ -111,7 +111,6 @@ class PersonalizedReasonGenerator:
 
         response = await self._llm_router.call(
             messages=[{"role": "user", "content": prompt}],
-            model="gpt-4o",
             temperature=0.7,
             max_tokens=100,
         )
