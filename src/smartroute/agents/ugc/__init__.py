@@ -10,6 +10,13 @@ UGC Insight Agent 模块
 - CacheManager: UGC缓存管理器
 """
 
-from smartroute.agents.ugc.agent import UGCInsightAgent
+__all__ = ["UGCInsightAgent", "NLPAnalyzer"]
 
-__all__ = ["UGCInsightAgent"]
+def __getattr__(name: str):
+    if name == "UGCInsightAgent":
+        from smartroute.agents.ugc.agent import UGCInsightAgent
+        return UGCInsightAgent
+    if name == "NLPAnalyzer":
+        from smartroute.agents.ugc.nlp_analyzer import NLPAnalyzer
+        return NLPAnalyzer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

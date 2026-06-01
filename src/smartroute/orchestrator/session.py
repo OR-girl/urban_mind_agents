@@ -8,8 +8,6 @@ import json
 from datetime import datetime
 from typing import Any
 
-import redis.asyncio as redis
-
 from smartroute.core.config import get_settings
 from smartroute.core.logging import get_logger
 from smartroute.schemas import SystemState
@@ -25,13 +23,14 @@ class SessionManager:
     使用 Redis 存储和管理 Session 状态
     """
 
-    def __init__(self, redis_client: redis.Redis | None = None) -> None:
+    def __init__(self, redis_client=None) -> None:
         self.redis = redis_client
         self._prefix = settings.app.session_redis_prefix
         self._ttl = settings.app.session_ttl_seconds
 
-    async def _get_redis(self) -> redis.Redis:
-        """获取 Redis 客户端"""
+    async def _get_redis(self):
+        """获取 Redis 客户端（延迟导入）"""
+        import redis.asyncio as redis
         if self.redis is None:
             self.redis = redis.Redis(
                 host=settings.db.redis_host,
@@ -251,6 +250,21 @@ class SessionManager:
         """关闭 Redis 连接"""
         if self.redis:
             await self.redis.close()
+
+    async def mark_clarify_pending(self, session_id: str, question: str) -> None:
+        """标记 Session 为反问挂起状态"""
+        client = await self._get_redis(); key = self._get_key(session_id)
+        data = await client.get(key); state_data = json.loads(data) if data else {}
+        state_data["status"] = "clarify_pending"
+        if "dialog_history" not in state_data: state_data["dialog_history"] = []
+        state_data["dialog_history"].append({"role":"system","content":question,"timestamp":datetime.now().isoformat()})
+        await client.setex(key, self._ttl, json.dumps(state_data, ensure_ascii=False))
+        logger.info("clarify_pending_marked", session_id=session_id)
+
+    async def is_clarify_pending(self, session_id: str) -> bool:
+        """检查 Session 是否处于反问挂起状态"""
+        data = await self.load_state(session_id)
+        return data.get("status") == "clarify_pending" if data else False
 
 
 # 全局 Session Manager 实例

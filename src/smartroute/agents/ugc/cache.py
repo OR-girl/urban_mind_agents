@@ -5,9 +5,7 @@ POI 评论分析结果的缓存管理
 """
 
 import json
-from typing import Any, Optional
-
-import redis.asyncio as redis
+from typing import Any
 
 from smartroute.core.config import get_settings
 from smartroute.core.logging import get_logger
@@ -23,13 +21,14 @@ class UGCCacheManager:
     管理 POI 评论分析结果的 Redis 缓存
     """
 
-    def __init__(self, redis_client: redis.Redis | None = None) -> None:
+    def __init__(self, redis_client=None) -> None:
         self.redis = redis_client
         self._prefix = settings.app.ugc_cache_ttl_seconds
         self._ttl = settings.app.ugc_cache_ttl_seconds or 604800  # 默认 7 天
 
-    async def _get_redis(self) -> redis.Redis:
-        """获取 Redis 客户端"""
+    async def _get_redis(self):
+        """获取 Redis 客户端（延迟导入）"""
+        import redis.asyncio as redis
         if self.redis is None:
             self.redis = redis.Redis(
                 host=settings.db.redis_host,

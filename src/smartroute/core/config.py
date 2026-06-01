@@ -27,7 +27,9 @@ class LLMProviderSettings(BaseSettings):
     openai_model_gpt4o_mini: str = "gpt-4o-mini"
 
     anthropic_api_key: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
-    anthropic_model_claude: str = "claude-3-5-sonnet-20241022"
+    anthropic_base_url: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"))
+    anthropic_model_claude: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL_CLAUDE", "deepseek-v4-pro"))
+    anthropic_model_sonnet: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL_SONNET", "deepseek-v4-flash"))
 
     qwen_api_key: str = Field(default_factory=lambda: os.getenv("QWEN_API_KEY", ""))
     qwen_base_url: str = "https://dashscope.aliyuncs.com/api/v1"
