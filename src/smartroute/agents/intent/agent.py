@@ -66,7 +66,7 @@ class IntentAgent(LLMBasedAgent):
         current_date = datetime.now().strftime("%Y-%m-%d")
         from smartroute.core.config import get_settings
         settings = get_settings()
-
+        print(settings.llm)
         # 合并对话历史
         dialog_history = state.dialog_history[-self.get_config_value("max_dialog_history_rounds", 3):]
 
@@ -85,7 +85,6 @@ class IntentAgent(LLMBasedAgent):
                 messages=[{"role": "user", "content": prompt}],
                 function_schema=function_schema,
                 temperature=0.1,
-                model =  settings.llm.openai_model_default
             )
 
         except Exception as e:
@@ -154,7 +153,6 @@ class IntentAgent(LLMBasedAgent):
             messages=[{"role": "user", "content": prompt}],
             function_schema=function_schema,
             temperature=0.1,
-            model =  settings.llm.openai_model_default
         )
         print( result)
         new_intent = self.extractor.parse_result(
@@ -167,8 +165,11 @@ class IntentAgent(LLMBasedAgent):
 
 if __name__ == "__main__":
     import asyncio
+    query1 = "我们一家三口这周六想去杭州西湖玩一天，孩子6岁，体力一般，所以不想安排得太赶，也不想走太多路。希望上午能看看西湖经典风景，中午找一家适合带孩子吃饭的本地餐厅，下午可以安排一些轻松的亲子活动，比如坐船、喂鱼、拍照之类的。 我们比较怕人挤人，希望尽量避开特别热门、排队很久的地方。预算大概 600 元以内，不算来回交通。最好路线能顺一点，不要来回绕路。如果下午孩子累了，也希望有可以提前结束或者找地方休息的备选方案。另外如果当天西湖边人太多，能不能推荐一个相对安静一点、但也适合家庭散步和拍照的替代路线?"
+    query2="明天上午一个人去西湖，下午去灵隐寺"
     intent_agent = IntentAgent()
-    state = SystemState(raw_query="明天上午一个人去西湖，下午去灵隐寺")
+
+    state = SystemState(raw_query=query1)
     result = asyncio.run(intent_agent.execute(state))
     for k, v in result.items():
         print(f"{k}: {v}")

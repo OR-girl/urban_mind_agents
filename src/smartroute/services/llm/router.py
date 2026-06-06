@@ -1,7 +1,7 @@
 """
-LLM Router - Anthropic-first multi-provider router with circuit breakers.
-Primary: Anthropic SDK → DeepSeek proxy (supports native tool_use).
-Fallback: OpenAI SDK → text completion + JSON extraction.
+LLM Router - OpenAI-first multi-provider router with circuit breakers.
+Primary: OpenAI SDK → text completion + function calling.
+Fallback: Anthropic SDK → native tool_use.
 """
 
 import json
@@ -18,7 +18,7 @@ settings = get_settings()
 
 
 class LLMRouter:
-    """Anthropic-first router. DeepSeek via Anthropic protocol → native tool_use."""
+    """OpenAI-first router with Anthropic fallback."""
 
     def __init__(self) -> None:
         self.circuit_breakers: dict[str, dict[str, Any]] = {
@@ -37,74 +37,111 @@ class LLMRouter:
         self, messages: list[dict[str, str]], model: str | None = None,
         temperature: float = 0.1, max_tokens: int = 1000, **kwargs: Any,
     ) -> str:
-        """普通文本调用。OpenAI 用于文本（快），Anthropic 备用。"""
-        # OpenAI first — 文本调用 DeepSeek 的 OpenAI 端点更快更稳定
-        if not self._is_open("openai"):
-            try:
-                result = await self._openai_chat(messages, model, temperature, max_tokens)
-                self._record_success("openai"); return result
-            except Exception:
-                self._record_failure("openai")
+        """普通文本调用。Anthropic 优先，OpenAI fallback。"""
+        print(f"[Call] anthropic circuit breaker: {self._is_open('anthropic')}")
+
         if not self._is_open("anthropic"):
             try:
-                result = await self._anthropic_chat(messages, model, temperature, max_tokens)
-                self._record_success("anthropic"); return result
-            except Exception:
+                print("[Call] 尝试Anthropic...")
+                result = await self._anthropic_chat(messages, model, temperature, max_tokens, **kwargs)
+                print(f"[Call] Anthropic返回: {result[:100] if result else 'EMPTY'}...")
+                self._record_success("anthropic")
+                return result
+            except Exception as e:
+                print(f"[Call] Anthropic失败: {e}")
                 self._record_failure("anthropic")
-        raise LLMError(message="所有LLM供应商均不可用", code="ALL_PROVIDERS_FAILED")
+
+        if not self._is_open("openai"):
+            try:
+                print("[Call] Fallback OpenAI...")
+                result = await self._openai_chat(messages, model, temperature, max_tokens, **kwargs)
+                print(f"[Call] OpenAI返回: {result[:100] if result else 'EMPTY'}...")
+                self._record_success("openai")
+                return result
+            except Exception as e:
+                print(f"[Call] OpenAI失败: {e}")
+                self._record_failure("openai")
+
+        raise LLMError(message="LLM调用失败", code="LLM_CALL_FAILED")
 
     async def call_with_function(
         self, messages: list[dict[str, str]], function_schema: dict[str, Any],
         model: str | None = None, temperature: float = 0.1,
     ) -> dict[str, Any]:
-        """Structured extraction via Anthropic native tool_use → text fallback."""
+        """Structured extraction: Anthropic tool_use → OpenAI function calling → text fallback."""
         fn_name = function_schema.get("name", "extract_data")
-        fn_desc = function_schema.get("description", "")
-        fn_params = function_schema.get("parameters", {})
 
-        # Anthropic native tool_use (DeepSeek proxy now supports it)
+        # Anthropic tool_use first
         if not self._is_open("anthropic"):
             try:
                 client = await self._get_anthropic_client()
                 actual_model = model or settings.llm.anthropic_model_claude
+                anthropic_tool = {
+                    "name": fn_name,
+                    "description": function_schema.get("description", ""),
+                    "input_schema": function_schema.get("parameters", {})
+                }
                 resp = await client.messages.create(
                     model=actual_model, messages=messages,
-                    tools=[{"name": fn_name, "description": fn_desc, "input_schema": fn_params}],
+                    tools=[anthropic_tool],
                     temperature=temperature, max_tokens=2000,
+                    thinking={"type": "disabled"},
                 )
-                self._record_success("anthropic")
                 for block in resp.content:
                     if block.type == "tool_use":
-                        return block.input if isinstance(block.input, dict) else json.loads(str(block.input))
-                # No tool_use block → try text
-                for block in resp.content:
-                    if block.type == "text" and block.text:
-                        parsed = self._parse_json_from_text(block.text)
-                        if parsed and (parsed.get("intent_type") or parsed.get("confidence")):
-                            return parsed
-            except Exception:
+                        self._record_success("anthropic")
+                        return block.input
+                return await self._fallback_function_call(messages, function_schema)
+            except Exception as e:
+                print(f"[call_with_function] Anthropic失败: {e}")
                 self._record_failure("anthropic")
 
-        # Text fallback
-        return await self._text_extraction_fallback(messages, function_schema)
+        # OpenAI function calling fallback
+        if not self._is_open("openai"):
+            try:
+                client = await self._get_openai_client()
+                actual_model = model or settings.llm.openai_model_default
+                resp = await client.chat.completions.create(
+                    model=actual_model, messages=messages,
+                    tools=[{"type": "function", "function": function_schema}],
+                    temperature=temperature, max_tokens=2000,
+                )
+                tool_calls = resp.choices[0].message.tool_calls
+                if tool_calls:
+                    self._record_success("openai")
+                    args = tool_calls[0].function.arguments
+                    return json.loads(args) if isinstance(args, str) else args
+                return await self._fallback_function_call(messages, function_schema)
+            except Exception as e:
+                print(f"[call_with_function] OpenAI失败: {e}")
+                self._record_failure("openai")
+
+        return await self._fallback_function_call(messages, function_schema)
 
     async def stream(
         self, messages: list[dict[str, str]], model: str | None = None,
         temperature: float = 0.1, max_tokens: int = 1500,
     ) -> AsyncGenerator[str, None]:
-        """流式输出 (Anthropic → OpenAI)"""
+        """流式输出 - Anthropic 优先，OpenAI fallback"""
         if not self._is_open("anthropic"):
             try:
                 client = await self._get_anthropic_client()
-                actual_model = model or settings.llm.anthropic_model_sonnet
+                actual_model = model or settings.llm.anthropic_model_claude
                 async with client.messages.stream(
                     model=actual_model, messages=messages,
                     temperature=temperature, max_tokens=max_tokens,
-                ) as s:
-                    async for text in s.text_stream:
-                        if text: yield text
-                self._record_success("anthropic"); return
-            except Exception: self._record_failure("anthropic")
+                    thinking={"type": "disabled"},
+                ) as stream:
+                    async for text in stream.text_stream:
+                        yield text
+                self._record_success("anthropic")
+                return
+            except Exception as e:
+                print(f"[Stream] Anthropic失败: {e}")
+                import traceback
+                traceback.print_exc()
+                self._record_failure("anthropic")
+
         if not self._is_open("openai"):
             try:
                 client = await self._get_openai_client()
@@ -114,11 +151,19 @@ class LLMRouter:
                     temperature=temperature, max_tokens=max_tokens, stream=True,
                 )
                 async for chunk in s:
-                    token = chunk.choices[0].delta.content or ""
-                    if token: yield token
-                self._record_success("openai"); return
-            except Exception: self._record_failure("openai")
-        raise LLMError(message="所有LLM供应商均不可用", code="STREAM_ALL_PROVIDERS_FAILED")
+                    if chunk.choices and len(chunk.choices) > 0:
+                        delta = chunk.choices[0].delta
+                        if delta and delta.content:
+                            yield delta.content
+                self._record_success("openai")
+                return
+            except Exception as e:
+                print(f"[Stream] OpenAI失败: {e}")
+                import traceback
+                traceback.print_exc()
+                self._record_failure("openai")
+
+        raise LLMError(message="LLM流式调用失败", code="STREAM_FAILED")
 
     # ══════════════════════════════════════════════════════════════
     #  Provider implementations
@@ -127,14 +172,32 @@ class LLMRouter:
     async def _anthropic_chat(self, messages, model, temp, max_tok) -> str:
         client = await self._get_anthropic_client()
         actual = model or settings.llm.anthropic_model_claude
-        resp = await client.messages.create(model=actual, messages=messages, temperature=temp, max_tokens=max_tok)
-        return resp.content[0].text if resp.content else ""
+        resp = await client.messages.create(
+            model=actual, messages=messages,
+            temperature=temp, max_tokens=max_tok,
+            thinking={"type": "disabled"},
+        )
+        for block in resp.content:
+            if block.type == "text":
+                return block.text
+        return ""
 
-    async def _openai_chat(self, messages, model, temp, max_tok) -> str:
+    async def _openai_chat(self, messages, model, temp, max_tok, **kwargs) -> str:
         client = await self._get_openai_client()
         actual = model or settings.llm.openai_model_default
-        resp = await client.chat.completions.create(model=actual, messages=messages, temperature=temp, max_tokens=max_tok)
-        return resp.choices[0].message.content or ""
+        print(f"[OpenAI] 调用模型: {actual}")
+        resp = await client.chat.completions.create(
+            model=actual, messages=messages,
+            temperature=temp, max_tokens=max_tok, **kwargs,
+        )
+        print(f"[OpenAI] 响应: choices数量={len(resp.choices)}, finish_reason={resp.choices[0].finish_reason if resp.choices else 'N/A'}")
+        if resp.choices:
+            msg = resp.choices[0].message
+            print(f"[OpenAI] message.content={repr(msg.content)[:100] if msg.content else 'None'}")
+            print(f"[OpenAI] message.tool_calls={msg.tool_calls}")
+        content = resp.choices[0].message.content or ""
+        print(f"[OpenAI] 最终返回内容长度: {len(content)}")
+        return content
 
     # ══════════════════════════════════════════════════════════════
     #  Clients (lazy init)
@@ -143,12 +206,9 @@ class LLMRouter:
     async def _get_anthropic_client(self):
         from anthropic import AsyncAnthropic
         if self._anthropic_client is None:
-            base = settings.llm.anthropic_base_url
-            if "api.anthropic.com" in base:
-                base = "https://api.anthropic.com"
             self._anthropic_client = AsyncAnthropic(
                 api_key=settings.llm.anthropic_api_key or "sk-placeholder",
-                base_url=base,
+                base_url=settings.llm.anthropic_base_url,
             )
         return self._anthropic_client
 
@@ -177,7 +237,7 @@ class LLMRouter:
             s["open_until"] = time.time() + s["recovery_timeout"]
 
     # ══════════════════════════════════════════════════════════════
-    #  Text extraction fallback
+    #  Text extraction fallback (原始实现)
     # ══════════════════════════════════════════════════════════════
 
     def _parse_json_from_text(self, text: str) -> dict:
@@ -191,34 +251,104 @@ class LLMRouter:
         try: return json.loads(t)
         except (json.JSONDecodeError, ValueError): return {}
 
-    async def _text_extraction_fallback(self, messages, schema) -> dict:
+    async def _fallback_function_call(
+        self,
+        messages: list[dict[str, str]],
+        function_schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        """降级：使用文本解析代替Function Calling"""
+        print("[Fallback] 进入fallback...")
+
+        # 安全获取消息内容
         user_content = ""
-        if messages:
-            last = messages[-1]; user_content = (last.get("content", "") or "")[:500]
-        prompt = f"""你是一个出行意图解析助手。请从用户输入中提取结构化出行信息，以 JSON 格式输出。
+        if messages and len(messages) > 0:
+            last_msg = messages[-1]
+            user_content = last_msg.get('content', '')
+            user_content = user_content.encode('utf-8', errors='replace').decode('utf-8')
 
-用户输入：「{user_content}」
+        # 简化prompt，只要求核心字段（glm-5对复杂prompt处理不好）
+        fn_name = function_schema.get("name", "extract_data")
+        if fn_name == "extract_intent":
+            # 意图抽取的简化prompt
+            prompt = f"""
+请从以下用户输入中提取关键信息，以JSON格式返回：
 
-请输出以下 JSON（严格按照此结构，不要输出任何解释文字）：
-{{
-  "intent_type": "tour|food_tour|city_walk|business|date|family|nature|culture",
-  "confidence": 0.0-1.0,
-  "spatial": {{"city": "城市名", "region": "区域或null", "anchor_poi": "锚点POI或null", "radius_km": null}},
-  "temporal": {{"date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM", "duration_hours": 8.0, "flexibility": "flexible"}},
-  "party": {{"size": 1, "composition": ["elder","child","adult"], "child_ages": [], "special_needs": []}},
-  "preferences": {{"must_have": [], "nice_to_have": [], "avoid": [], "themes": [], "cuisine_types": [], "poi_style": null}},
-  "budget": {{"per_person": 金额数字或null, "level": "budget|mid|premium|luxury或null"}},
-  "ambiguity_flags": [],
-  "inferred_fields": []
-}}
+用户输入：{user_content}
 
-重要规则：
-1. spatial.city 必须从输入中提取（杭州、北京等）
-2. temporal.date 必须是绝对日期（YYYY-MM-DD），start_time/end_time 不能为 null，默认填 "09:00"/"18:00"
-3. 如果提到"父母"/"爸妈"/"老人"，party.composition 包含 "elder"，party.size 至少为2
-4. 如果提到预算金额，填入 budget.per_person
-5. 如果提到菜系，填入 preferences.cuisine_types
-6. 意图类型根据输入合理推断（带父母→family，约会→date，商务→business）
-7. 只输出 JSON，不要输出 markdown 代码块或其他文字"""
-        result = await self.call(messages=[{"role": "user", "content": prompt}], temperature=0.1, max_tokens=2000)
-        return self._parse_json_from_text(result)
+请返回JSON，包含以下字段：
+- intent_type: 意图类型(tour/food_tour/city_walk/business/date/family/nature/culture)
+- city: 城市
+- anchor_poi: 锚点地点
+- date: 日期(YYYY-MM-DD格式)
+- start_time: 开始时间(HH:MM格式)
+- end_time: 结束时间(HH:MM格式)
+- party_size: 出行人数
+- transport_mode: 交通方式(walk/bike/car/taxi/public)，注意识别"开车"、"自驾"等关键词
+- budget_per_person: 人均预算
+- confidence: 置信度(0-1)
+
+示例返回格式：
+{{"intent_type": "family", "city": "杭州", "anchor_poi": "西湖"}}
+"""
+        else:
+            # 其他场景的通用prompt
+            schema_str = json.dumps(function_schema.get('parameters', {}), ensure_ascii=False, indent=2)
+            prompt = f"""
+请以JSON格式输出：
+{schema_str}
+
+用户输入：{user_content}
+"""
+
+        # 调用LLM（增加max_tokens）
+        result = await self._openai_chat(
+            [{"role": "user", "content": prompt}],
+            None, 0.1, 4000  # 增加max_tokens到4000
+        )
+
+        print(f"[Fallback] LLM返回: {result[:200] if result else 'EMPTY'}")
+
+        # 解析JSON
+        parsed = self._parse_json_from_text(result)
+
+        # 如果解析成功但字段不完整，补充默认值
+        if parsed and fn_name == "extract_intent":
+            parsed = self._fill_intent_defaults(parsed)
+
+        print(f"[Fallback] 解析结果: {parsed}")
+        return parsed
+
+    def _fill_intent_defaults(self, parsed: dict) -> dict:
+        """补充Intent字段的默认结构"""
+        # 处理 start_time 和 end_time 为 None 的情况
+        start_time = parsed.get("start_time") or "09:00"
+        end_time = parsed.get("end_time") or "18:00"
+
+        # 构建完整的Intent结构
+        result = {
+            "intent_type": parsed.get("intent_type", "tour"),
+            "confidence": parsed.get("confidence", 0.5),
+            "spatial": {
+                "city": parsed.get("city", "未知"),
+                "anchor_poi": parsed.get("anchor_poi"),
+                "radius_km": 5.0,
+            },
+            "temporal": {
+                "date": parsed.get("date", "2026-06-06"),
+                "start_time": start_time,
+                "end_time": end_time,
+                "duration_hours": 8.0,
+            },
+            "party": {
+                "size": parsed.get("party_size", 1),
+            },
+            "budget": {
+                "per_person": parsed.get("budget_per_person"),
+            },
+            "transport": {
+                "primary_mode": parsed.get("transport_mode", "walk"),
+            },
+            "preferences": {},
+            "poi_schedule": [],
+        }
+        return result

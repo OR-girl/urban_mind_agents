@@ -7,30 +7,32 @@
 llm:
   # 主供应商（按优先级排序）
   providers:
-    - name: openai
+    - name: anthropic
       priority: 1
       models:
         intent_extraction: deepseek-v4-pro
-        ugc_analysis: deepseek-v4-flash
+        ugc_analysis: deepseek-v4-pro
         presentation: deepseek-v4-pro
         fallback: deepseek-v4-pro
-      timeout_seconds: 10
+      timeout_seconds: 30
       max_retries: 3
 
-    - name: anthropic
+    - name: openai
       priority: 2
       models:
-        intent_extraction: claude-3-5-sonnet-20241022
-        presentation: claude-3-5-sonnet-20241022
-      timeout_seconds: 10
+        intent_extraction: deepseek-v4-pro
+        ugc_analysis: deepseek-v4-pro
+        presentation: deepseek-v4-pro
+        fallback: deepseek-v4-pro
+      timeout_seconds: 30
       max_retries: 3
 
     - name: qwen
       priority: 3
       models:
-        intent_extraction: qwen-max
-        ugc_analysis: qwen-plus
-      timeout_seconds: 10
+        intent_extraction: deepseek-v4-pro
+        ugc_analysis: deepseek-v4-pro
+      timeout_seconds: 30
       max_retries: 3
 
   # 成本控制

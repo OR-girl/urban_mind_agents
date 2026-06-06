@@ -316,11 +316,13 @@ class OrchestratorGraph:
             # 调用 Intent Agent
             from smartroute.agents.intent import IntentAgent
             agent = IntentAgent()
-            intent_result, clarification = await agent.execute(state)
+            result = await agent.execute(state)
 
-            state.intent = intent_result.model_dump() if intent_result else None
-            state.clarification_needed = clarification is not None
-            state.clarification_question = clarification
+            # 处理返回结果（字典格式）
+            if result:
+                state.intent = result.get("intent")
+                state.clarification_needed = result.get("clarification_needed", False)
+                state.clarification_question = result.get("clarification_question")
 
             agent_logger.timing("intent_extraction", timer.stop())
 

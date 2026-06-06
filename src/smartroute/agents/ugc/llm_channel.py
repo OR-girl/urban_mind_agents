@@ -27,20 +27,17 @@ POI 信息：
 近期评论（{review_count} 条，近 3 个月）：
 {reviews_text}
 
-请提取以下信息并以 JSON 格式输出：
-1. highlights: 亮点列表（最多 3 条，每条 15 字以内，聚焦用户最常提及的正面体验）
-2. warnings: 避雷提示列表（最多 3 条，每条 15 字以内，聚焦用户最常提及的问题）
-3. best_time: 最佳游览时段（基于评论推断，如"工作日午餐"、"周末避开 12-14 点"）
-4. ugc_sentiment: 维度化情感评分（food, service, environment, wait_time, value_for_money，各 0-5 分）
-5. scene_tags: 场景标签（从以下选择适合的：亲子友好、商务宴请、约会浪漫、独自用餐、聚会聚餐、夜宵、下午茶、快餐便餐）
-6. queue_warning: 排队预警（如有明显排队问题，请描述）
-7. peak_hours: 高峰时段列表
-8. estimated_duration_min: 建议游览时长（分钟）
+只返回一个JSON对象，不要任何解释、不要markdown代码块。格式如下：
+{{"highlights":["亮点1","亮点2","亮点3"],"warnings":["避雷1","避雷2","避雷3"],"best_time":"最佳游览时段","ugc_sentiment":{{"food":0,"service":0,"environment":0,"wait_time":0,"value_for_money":0}},"scene_tags":["标签1","标签2"],"queue_warning":"排队预警","peak_hours":["高峰1","高峰2"],"estimated_duration_min":60}}
 
-注意：
-- 评分要客观，不要过度美化
-- 亮点和避雷要基于真实评论，不要臆测
-- 对于差评要单独关注，提取共性问题
+规则：
+- highlights: 最多3条，每条15字以内，基于评论中的正面体验
+- warnings: 最多3条，每条15字以内，基于评论中的问题
+- ugc_sentiment: food/service/environment/wait_time/value_for_money 各0-5分，基于评论客观评分
+- scene_tags: 从[亲子友好,商务宴请,约会浪漫,独自用餐,聚会聚餐,夜宵,下午茶,快餐便餐]中选择
+- queue_warning: 如有排队问题请描述，无则空字符串
+- peak_hours: 高峰时段列表，无则空数组
+- estimated_duration_min: 建议游览时长(分钟)，默认60
 """
 
 
@@ -100,13 +97,30 @@ class LLMChannel(LLMBasedAgent):
         )
 
         try:
-            # 调用 LLM
-            response = await self.call_llm(
-                messages=[{"role": "user", "content": prompt}],
-                model=self._get_model_name(),
-                temperature=0.2,
-                max_tokens=800,
+            # 直接调用 Anthropic API（绕过 router 避免 fallback 链路复杂性）
+            from anthropic import AsyncAnthropic
+            import os
+            client = AsyncAnthropic(
+                api_key=os.getenv("ANTHROPIC_API_KEY", ""),
+                base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic"),
             )
+            resp = await client.messages.create(
+                model=self._get_model_name(),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=4000,
+                thinking={"type": "disabled"},
+            )
+            response = ""
+            for block in resp.content:
+                if block.type == "text":
+                    response = block.text
+                    break
+
+            # 检查响应是否为空
+            if not response or not response.strip():
+                logger.warning("llm_empty_response", poi_id=poi.get("poi_id"))
+                return self._get_empty_result(poi, "empty_response")
 
             # 解析结果
             result = self._parse_response(response, poi)
@@ -122,13 +136,13 @@ class LLMChannel(LLMBasedAgent):
             return self._get_empty_result(poi, "llm_error")
 
     def _get_model_name(self) -> str:
-        """获取模型名称（使用 mini 版本降低成本）"""
+        """获取模型名称 - 直接调用 Anthropic API"""
         llm_config = settings.get_llm_config()
         providers = llm_config.get("providers", [])
         for provider in providers:
-            if provider.get("name") == "openai":
-                return provider.get("models", {}).get("ugc_analysis", "gpt-4o-mini")
-        return "gpt-4o-mini"
+            if provider.get("name") == "anthropic":
+                return provider.get("models", {}).get("ugc_analysis", "deepseek-v4-pro")
+        return "deepseek-v4-pro"
 
     def _select_reviews(
         self,
@@ -201,6 +215,7 @@ class LLMChannel(LLMBasedAgent):
             result.setdefault("queue_warning", "")
             result.setdefault("peak_hours", [])
             result.setdefault("estimated_duration_min", 60)
+            result.setdefault("confidence", 0.8)  # JSON 解析成功即认为置信度为 0.8
 
             # 截断过长的内容
             result["highlights"] = result["highlights"][:3]
