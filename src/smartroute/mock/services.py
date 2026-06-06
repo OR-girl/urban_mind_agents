@@ -69,12 +69,21 @@ class MockServiceLayer:
             tags = poi.get("tags", []); category = poi.get("category", "")
             if "餐" in category or "茶" in category: score += 1.0
             elif "景点" in category: score += 0.5
+            elif "购物" in category: score += 0.5
             if themes:
                 for theme in themes:
                     if theme in tags or theme in category: score += 1.5
             if cuisine:
                 for c in cuisine:
                     if c in category or c in str(tags): score += 2.0
+            # Category keyword matching from must_have/nice_to_have
+            all_needs = (needs if isinstance(needs, list) else []) + (
+                intent_dict.get("preferences", {}).get("nice_to_have", []) if isinstance(intent_dict, dict) else [])
+            for need in all_needs:
+                need_lower = (need or "").lower()
+                if any(kw in need_lower for kw in ("购物", "商场", "逛街", "逛")) and "购物" in category: score += 3.0
+                if any(kw in need_lower for kw in ("下午茶", "喝茶", "茶")) and "茶" in category: score += 3.0
+                if "博物馆" in need_lower and "博物馆" in category: score += 3.0
             cost = poi.get("avg_cost", 0) or 0
             if "餐" in category and budget > 0:
                 if cost > budget * 1.5: score -= 3.0
