@@ -2,6 +2,7 @@
 VRPTW Solver - OR-Tools求解器
 
 使用Google OR-Tools求解带时间窗的车辆路径问题
+支持多种交通方式：步行、骑行、驾车、打车、公共交通
 """
 
 import asyncio
@@ -10,8 +11,27 @@ from typing import Any, Optional
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
-from smartroute.schemas.intent import IntentResult
+from smartroute.schemas.intent import IntentResult, TransportMode
 from smartroute.schemas.profile import UserProfile
+
+
+# 交通方式速度参数（km/h）
+TRANSPORT_SPEEDS = {
+    TransportMode.WALK: 4.0,      # 步行约4km/h
+    TransportMode.BIKE: 15.0,     # 骑行约15km/h
+    TransportMode.CAR: 35.0,      # 市区驾车约35km/h
+    TransportMode.TAXI: 35.0,     # 打车同驾车
+    TransportMode.PUBLIC: 25.0,   # 公共交通（含换乘等待）
+}
+
+# 交通方式费用参数（元/km）
+TRANSPORT_COSTS = {
+    TransportMode.WALK: 0.0,
+    TransportMode.BIKE: 0.0,      # 共享单车约1.5元/30分钟
+    TransportMode.CAR: 0.8,       # 油费+停车约0.8元/km
+    TransportMode.TAXI: 3.0,      # 打车约3元/km（含起步价摊销）
+    TransportMode.PUBLIC: 0.3,    # 地铁/公交约0.3元/km
+}
 
 
 class VRPTWSolver:
@@ -34,13 +54,13 @@ class VRPTWSolver:
     ) -> Optional[list[Any]]:
         """
         求解VRPTW
-        
+
         Args:
             pois: POI列表
             intent: IntentResult
             profile: UserProfile
             weights: 权重配置
-            
+
         Returns:
             POI访问序列或None
         """
@@ -53,6 +73,22 @@ class VRPTWSolver:
 
         # 构建时间窗
         time_windows = self._build_time_windows(pois, intent)
+
+        # 调试：打印时间窗
+        print(f"[OR-Tools] POI数量: {n}")
+        print(f"[OR-Tools] 总时长: {intent.temporal.duration_hours}小时")
+        for i, (ws, we) in enumerate(time_windows[:5]):
+            print(f"[OR-Tools] 时间窗{i}: {ws//60}:{ws%60:02d} - {we//60}:{we%60:02d}")
+
+        # 检查时间窗是否有效
+        valid_windows = [(ws, we) for ws, we in time_windows if ws < we]
+        if len(valid_windows) < len(time_windows):
+            print(f"[OR-Tools] 有{len(time_windows) - len(valid_windows)}个无效时间窗")
+
+        # 如果时间窗太少，返回启发式排序
+        if len(valid_windows) < 2:
+            print("[OR-Tools] 有效POI太少，使用启发式排序")
+            return self._heuristic_sort(pois, intent)
 
         # 构建体验得分
         experience_scores = [self._get_experience_score(poi) for poi in pois]
@@ -130,26 +166,77 @@ class VRPTWSolver:
     ) -> list[list[int]]:
         """
         构建距离矩阵（分钟）
-        
+
         Args:
             pois: POI列表
             intent: IntentResult
-            
+
         Returns:
             时间距离矩阵
         """
         n = len(pois)
         matrix = [[0] * n for _ in range(n)]
 
-        # TODO: 实际实现需要调用地图API
-        # 这里使用模拟数据
+        # 获取交通方式
+        transport_mode = intent.transport.primary_mode
+        speed_kmh = TRANSPORT_SPEEDS.get(transport_mode, 4.0)
+
+        # 根据交通方式计算通行时间
         for i in range(n):
             for j in range(n):
                 if i != j:
-                    # 简化计算：假设平均15分钟通勤
-                    matrix[i][j] = 15
+                    # 获取两点距离（km）
+                    distance_km = self._get_distance_between_pois(pois[i], pois[j])
+
+                    # 计算通行时间（分钟）
+                    # 时间 = 距离 / 速度 * 60
+                    travel_minutes = int(distance_km / speed_kmh * 60)
+
+                    # 不同交通方式有额外时间开销
+                    if transport_mode == TransportMode.CAR:
+                        # 驾车需要考虑找停车位时间
+                        travel_minutes += 5
+                    elif transport_mode == TransportMode.PUBLIC:
+                        # 公共交通需要考虑换乘等待
+                        travel_minutes += 10
+                    elif transport_mode == TransportMode.TAXI:
+                        # 打车需要考虑等待接单
+                        travel_minutes += 3
+
+                    matrix[i][j] = max(travel_minutes, 5)  # 最小5分钟
 
         return matrix
+
+    def _get_distance_between_pois(self, poi_a: Any, poi_b: Any) -> float:
+        """
+        获取两个POI之间的距离（km）
+
+        Args:
+            poi_a: POI A
+            poi_b: POI B
+
+        Returns:
+            距离（km）
+        """
+        # 尝试从Mock距离矩阵获取
+        from smartroute.mock.data import DISTANCE_MATRIX
+
+        poi_a_dict = poi_a if isinstance(poi_a, dict) else poi_a.model_dump()
+        poi_b_dict = poi_b if isinstance(poi_b, dict) else poi_b.model_dump()
+
+        poi_a_id = poi_a_dict.get("poi_id", "")
+        poi_b_id = poi_b_dict.get("poi_id", "")
+
+        if poi_a_id in DISTANCE_MATRIX and poi_b_id in DISTANCE_MATRIX[poi_a_id]:
+            # DISTANCE_MATRIX是步行时间（分钟），转换为距离
+            walk_minutes = DISTANCE_MATRIX[poi_a_id][poi_b_id]
+            # 步行速度约4km/h，12分钟≈1km
+            distance_km = walk_minutes / 12.0
+            return distance_km
+
+        # Mock数据中没有，使用简化估算
+        # 假设平均距离为3km
+        return 3.0
 
     def _build_time_windows(
         self,
@@ -158,11 +245,11 @@ class VRPTWSolver:
     ) -> list[tuple[int, int]]:
         """
         构建时间窗
-        
+
         Args:
             pois: POI列表
             intent: IntentResult
-            
+
         Returns:
             时间窗列表（分钟）
         """
@@ -174,16 +261,25 @@ class VRPTWSolver:
         for poi in pois:
             poi_dict = poi if isinstance(poi, dict) else poi.model_dump()
 
-            # 解析营业时间（简化）
-            # TODO: 实际实现需要精确解析
-            open_time = start_minutes
-            close_time = end_minutes
+            # 解析营业时间
+            business_hours = poi_dict.get("business_hours", [])
+            if business_hours and len(business_hours) > 0:
+                open_time_str = business_hours[0].get("open", "00:00")
+                close_time_str = business_hours[0].get("close", "24:00")
+                open_time = self._time_to_minutes(open_time_str)
+                close_time = self._time_to_minutes(close_time_str)
+            else:
+                # 无营业时间数据，假设全天开放
+                open_time = start_minutes
+                close_time = end_minutes
 
             duration = poi_dict.get("estimated_duration_min", 60)
 
+            # 时间窗：用户时间范围与营业时间的交集
             window_start = max(open_time, start_minutes)
             window_end = min(close_time - duration, end_minutes)
 
+            # 如果时间窗无效，使用用户时间范围
             if window_start >= window_end:
                 window_start = start_minutes
                 window_end = end_minutes
@@ -269,3 +365,44 @@ class VRPTWSolver:
             index = solution.Value(routing.NextVar(index))
 
         return route
+
+    def _heuristic_sort(
+        self,
+        pois: list[Any],
+        intent: IntentResult,
+    ) -> list[Any]:
+        """
+        启发式排序（OR-Tools失败时的fallback）
+
+        Args:
+            pois: POI列表
+            intent: IntentResult（用于预算过滤）
+
+        Returns:
+            排序后的POI列表
+        """
+        print("[OR-Tools] 使用启发式排序作为fallback")
+
+        # 预算过滤
+        budget = intent.budget.per_person or 500
+
+        scored_pois = []
+        for poi in pois:
+            poi_dict = poi if isinstance(poi, dict) else poi.model_dump()
+            rating = poi_dict.get("rating", 3.0)
+            distance = poi_dict.get("distance_km", 5.0)
+            avg_cost = poi_dict.get("avg_cost", 0)
+
+            # 预算过滤
+            if avg_cost > budget * 1.2:
+                continue
+
+            # 综合得分：评分高 + 距离近 + 费用合理
+            score = rating * 0.5 - distance * 0.3 + (budget - avg_cost) / budget * 0.2
+            scored_pois.append((score, poi))
+
+        # 按得分排序
+        scored_pois.sort(key=lambda x: x[0], reverse=True)
+
+        # 返回排序后的POI（最多选5-6个，确保时间够用）
+        return [p[1] for p in scored_pois[:6]]

@@ -18,6 +18,8 @@ from smartroute.schemas.intent import (
     BudgetInfo,
     POIScheduleItem,
     TimeSlot,
+    TransportPreference,
+    TransportMode,
 )
 
 
@@ -43,6 +45,13 @@ INTENT_EXTRACTION_PROMPT = """
    - 例如："第一站西湖，第二站灵隐寺，最后去浙大" → sequence分别为1、2、3
    - 如果用户只是并列列举（如"去西湖和灵隐寺"），没有明确顺序词，则sequence留空（不填写）
    - 不要根据时间段推断顺序（上午vs下午不代表用户有顺序偏好）
+8. 交通方式识别（重要）：
+   - 步行关键词："步行"、"走路"、"逛逛" → walk
+   - 骑行关键词："骑车"、"自行车"、"电动车"、"骑行" → bike
+   - 驾车关键词："开车"、"自驾"、"驾车"、"私家车" → car
+   - 打车关键词："打车"、"网约车"、"滴滴" → taxi
+   - 公共交通关键词："地铁"、"公交"、"坐地铁"、"坐公交" → public
+   - 如果用户没有明确提及，默认为步行(walk)
 
 当前日期：{current_date}
 请求类型：{request_type}
@@ -134,6 +143,18 @@ INTENT_FUNCTION_SCHEMA = {
                 "properties": {
                     "per_person": {"type": "number", "description": "人均预算(元)"},
                     "level": {"type": "string", "enum": ["budget", "mid", "premium", "luxury"], "description": "消费档位"},
+                },
+            },
+            "transport": {
+                "type": "object",
+                "description": "交通方式偏好",
+                "properties": {
+                    "primary_mode": {"type": "string", "enum": ["walk", "bike", "car", "taxi", "public", "mixed"], "description": "主要交通方式"},
+                    "secondary_mode": {"type": "string", "enum": ["walk", "bike", "car", "taxi", "public"], "description": "备选交通方式"},
+                    "avoid_modes": {"type": "array", "items": {"type": "string", "enum": ["walk", "bike", "car", "taxi", "public"]}, "description": "避免的交通方式"},
+                    "car_available": {"type": "boolean", "description": "是否有车"},
+                    "parking_preference": {"type": "string", "enum": ["free", "paid", "any"], "description": "停车偏好"},
+                    "public_transport_preference": {"type": "string", "enum": ["metro", "bus", "both"], "description": "公共交通偏好"},
                 },
             },
             "ambiguity_flags": {"type": "array", "items": {"type": "string"}, "description": "需要反问的字段"},
@@ -268,6 +289,19 @@ class SlotExtractor:
         else:
             budget = BudgetInfo()
 
+        # 解析交通方式
+        if result.get("transport"):
+            transport_data = result["transport"]
+            if transport_data.get("primary_mode"):
+                transport_data["primary_mode"] = TransportMode(transport_data["primary_mode"])
+            if transport_data.get("secondary_mode"):
+                transport_data["secondary_mode"] = TransportMode(transport_data["secondary_mode"])
+            if transport_data.get("avoid_modes"):
+                transport_data["avoid_modes"] = [TransportMode(m) for m in transport_data["avoid_modes"]]
+            transport = TransportPreference(**transport_data)
+        else:
+            transport = TransportPreference()
+
         # 解析 POI 时间安排
         poi_schedule = []
         if result.get("poi_schedule"):
@@ -304,8 +338,9 @@ class SlotExtractor:
             )
             spatial.anchor_poi = sorted_schedule[0].poi_name
 
-        intent_type = IntentType(result.get("intent_type", "tour"))
-        confidence = result.get("confidence", 0.5)
+        intent_type_str = result.get("intent_type") or "tour"
+        intent_type = IntentType(intent_type_str)
+        confidence = result.get("confidence") or 0.5
 
         return IntentResult(
             intent_type=intent_type,
@@ -315,6 +350,7 @@ class SlotExtractor:
             party=party,
             preferences=preferences,
             budget=budget,
+            transport=transport,
             poi_schedule=poi_schedule,
             ambiguity_flags=result.get("ambiguity_flags", []),
             inferred_fields=result.get("inferred_fields", []),

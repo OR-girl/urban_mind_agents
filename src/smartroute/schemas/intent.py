@@ -57,6 +57,17 @@ class BudgetLevel(str, Enum):
     LUXURY = "luxury"           # 奢华
 
 
+class TransportMode(str, Enum):
+    """交通方式"""
+
+    WALK = "walk"               # 步行
+    BIKE = "bike"               # 骑行（自行车/电动车）
+    CAR = "car"                 # 驾车（私家车）
+    TAXI = "taxi"               # 打车（网约车）
+    PUBLIC = "public"           # 公共交通（地铁/公交）
+    MIXED = "mixed"             # 混合（多种方式）
+
+
 class POIScheduleItem(BaseModel):
     """POI 时间安排项"""
 
@@ -209,6 +220,35 @@ class BudgetInfo(BaseModel):
     )
 
 
+class TransportPreference(BaseModel):
+    """交通方式偏好"""
+
+    primary_mode: TransportMode = Field(
+        default=TransportMode.WALK,
+        description="主要交通方式",
+    )
+    secondary_mode: TransportMode | None = Field(
+        default=None,
+        description="备选交通方式",
+    )
+    avoid_modes: list[TransportMode] = Field(
+        default_factory=list,
+        description="避免的交通方式",
+    )
+    car_available: bool | None = Field(
+        default=None,
+        description="是否有车（驾车模式时）",
+    )
+    parking_preference: str | None = Field(
+        default=None,
+        description="停车偏好：free/paid/any",
+    )
+    public_transport_preference: str | None = Field(
+        default=None,
+        description="公共交通偏好：metro/bus/both",
+    )
+
+
 class IntentResult(BaseModel):
     """
     意图解析结果
@@ -245,6 +285,10 @@ class IntentResult(BaseModel):
     budget: BudgetInfo = Field(
         default_factory=BudgetInfo,
         description="预算信息",
+    )
+    transport: TransportPreference = Field(
+        default_factory=TransportPreference,
+        description="交通方式偏好",
     )
     poi_schedule: list[POIScheduleItem] = Field(
         default_factory=list,

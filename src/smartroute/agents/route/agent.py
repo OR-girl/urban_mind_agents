@@ -199,14 +199,119 @@ class RoutePlanningAgent(BaseAgent):
     ) -> dict[str, Any] | None:
         """
         降级方案生成
-        
+
         Args:
             pois: POI列表
             intent: IntentResult
-            
+
         Returns:
             降级路线或None
         """
         # 使用LLM进行启发式排序
         # TODO: 实现LLM兜底逻辑
         return None
+
+
+if __name__ == "__main__":
+    import asyncio
+    from smartroute.schemas.state import SystemState
+    from smartroute.schemas.profile import UserProfile
+
+    print("=" * 60)
+    print("完整流程：Intent → Retrieval → Route")
+    print("=" * 60)
+
+    # 用户输入
+    query = "我们一家三口开车去杭州西湖玩一天，孩子6岁，希望中午找个餐厅吃饭"
+    print(f"\n用户输入: {query}")
+    print("-" * 60)
+
+    # Step 1: Intent Agent
+    print("\n【Intent Agent】意图识别...")
+    from smartroute.agents.intent import IntentAgent
+    intent_agent = IntentAgent()
+
+    state = SystemState(
+        session_id="test_session",
+        trace_id="test_trace",
+        request_type="NEW",
+        user_id="test_user",
+        raw_query=query,
+        dialog_history=[],
+    )
+
+    intent_result = asyncio.run(intent_agent.execute(state))
+
+    # 获取交通方式（重点）
+    intent = intent_result.get("intent", {})
+    transport = intent.get("transport", {})
+    primary_mode = transport.get("primary_mode")
+
+    # 处理Enum类型
+    if hasattr(primary_mode, "value"):
+        mode_value = primary_mode.value
+    else:
+        mode_value = primary_mode or "walk"
+
+    # 如果LLM没识别出交通方式，从query中推断
+    if mode_value == "walk" and ("开车" in query or "驾车" in query):
+        print("  LLM未识别交通方式，从query推断: car")
+        from smartroute.schemas.intent import TransportMode, TransportPreference
+        intent["transport"] = {"primary_mode": TransportMode.CAR}
+        mode_value = "car"
+
+    print(f"  意图类型: {intent.get('intent_type')}")
+    print(f"  城市: {intent.get('spatial', {}).get('city', '')}")
+    print(f"  交通方式: {mode_value}")
+
+    state.intent = intent
+
+    # Step 2: Profile
+    print("\n【Profile Agent】用户画像...")
+    profile = UserProfile(user_id="test_user", spending_level="mid", visited_poi_ids=["poi_xihu_001"])
+    state.profile = profile.model_dump()
+    print(f"  消费档位: {profile.spending_level}")
+
+    # Step 3: Retrieval
+    print("\n【Retrieval Agent】多路召回...")
+    from smartroute.agents.retrieval import RetrievalAgent
+    retrieval_agent = RetrievalAgent()
+    retrieval_result = asyncio.run(retrieval_agent.execute(state))
+    candidates = retrieval_result.get("candidates", [])[:6]
+    print(f"  候选数量: {len(candidates)}个")
+    print(f"  前3个: {', '.join([p.get('name') for p in candidates[:3]])}")
+
+    # Step 4: Route计算
+    print("\n【Route Agent】路线规划...")
+    from smartroute.agents.route.solver import TRANSPORT_SPEEDS, TRANSPORT_COSTS
+    from smartroute.schemas.intent import TransportMode
+
+    transport_mode = TransportMode(mode_value)
+    speed = TRANSPORT_SPEEDS.get(transport_mode, 4.0)
+    cost_rate = TRANSPORT_COSTS.get(transport_mode, 0.0)
+
+    print(f"  交通方式: {mode_value}")
+    print(f"  速度: {speed}km/h, 费用: {cost_rate}元/km")
+
+    # 时间轴
+    print(f"\n路线时间轴:")
+    current = 9 * 60
+    total_cost = 0
+    for i, poi in enumerate(candidates, 1):
+        arrive = f"{current//60:02d}:{current%60:02d}"
+        leave = current + 70
+        if i < len(candidates):
+            dist = max(poi.get("distance_km", 0), 1.5)
+            travel = int(dist / speed * 60)
+            if transport_mode == TransportMode.CAR: travel += 5
+            elif transport_mode == TransportMode.PUBLIC: travel += 10
+            elif transport_mode == TransportMode.TAXI: travel += 3
+            fee = round(dist * cost_rate, 1)
+            total_cost += fee
+            print(f"  {i}. {poi.get('name')}: {arrive}→ {travel}分钟/¥{fee}")
+            current = leave + travel
+        else:
+            print(f"  {i}. {poi.get('name')}: {arrive}→")
+
+    print(f"\n总交通费用: ¥{total_cost}")
+    print("=" * 60)

@@ -1,14 +1,14 @@
 """
 Multi-Plan Generator - 多方案生成器
 
-生成3个差异化路线方案
+生成3个差异化路线方案，支持多种交通方式
 """
 
 import asyncio
 from typing import Any
 
-from smartroute.agents.route.solver import VRPTWSolver
-from smartroute.schemas.intent import IntentResult
+from smartroute.agents.route.solver import VRPTWSolver, TRANSPORT_SPEEDS, TRANSPORT_COSTS
+from smartroute.schemas.intent import IntentResult, TransportMode
 from smartroute.schemas.profile import UserProfile
 from smartroute.schemas.route import RoutePlan, POITimelineItem
 
@@ -131,11 +131,11 @@ class MultiPlanGenerator:
     ) -> list[dict[str, Any]]:
         """
         构建时间轴
-        
+
         Args:
             route_sequence: POI访问序列
             intent: IntentResult
-            
+
         Returns:
             时间轴列表
         """
@@ -143,6 +143,11 @@ class MultiPlanGenerator:
 
         start_minutes = self._time_to_minutes(intent.temporal.start_time)
         current_time = start_minutes
+
+        # 获取交通方式
+        transport_mode = intent.transport.primary_mode
+        speed_kmh = TRANSPORT_SPEEDS.get(transport_mode, 4.0)
+        cost_per_km = TRANSPORT_COSTS.get(transport_mode, 0.0)
 
         for i, poi in enumerate(route_sequence):
             poi_dict = poi if isinstance(poi, dict) else poi.model_dump()
@@ -173,18 +178,66 @@ class MultiPlanGenerator:
                 # 交通到下一个
                 next_poi = route_sequence[i + 1]
                 next_dict = next_poi if isinstance(next_poi, dict) else next_poi.model_dump()
+
+                # 计算距离和通行时间
+                distance_km = self._get_distance_between_pois(poi_dict, next_dict)
+                travel_minutes = int(distance_km / speed_kmh * 60)
+
+                # 交通方式额外开销
+                if transport_mode == TransportMode.CAR:
+                    travel_minutes += 5  # 找停车位
+                elif transport_mode == TransportMode.PUBLIC:
+                    travel_minutes += 10  # 换乘等待
+                elif transport_mode == TransportMode.TAXI:
+                    travel_minutes += 3  # 等待接单
+
+                travel_minutes = max(travel_minutes, 5)
+
+                # 计算交通费用
+                transport_cost = round(distance_km * cost_per_km, 1)
+
+                # 交通方式名称
+                mode_name = self._get_transport_mode_name(transport_mode)
+
                 item["transport_to_next"] = {
-                    "mode": "步行",  # 简化
-                    "duration_min": 15,
-                    "distance_m": 800,
+                    "mode": mode_name,
+                    "duration_min": travel_minutes,
+                    "distance_m": int(distance_km * 1000),
+                    "cost": transport_cost,
                 }
 
             timeline.append(item)
 
             # 更新时间
-            current_time += duration + queue_time + 15  # 加通勤时间
+            current_time += duration + queue_time + travel_minutes
 
         return timeline
+
+    def _get_distance_between_pois(self, poi_a_dict: dict, poi_b_dict: dict) -> float:
+        """获取两个POI之间的距离（km）"""
+        from smartroute.mock.data import DISTANCE_MATRIX
+
+        poi_a_id = poi_a_dict.get("poi_id", "")
+        poi_b_id = poi_b_dict.get("poi_id", "")
+
+        if poi_a_id in DISTANCE_MATRIX and poi_b_id in DISTANCE_MATRIX[poi_a_id]:
+            walk_minutes = DISTANCE_MATRIX[poi_a_id][poi_b_id]
+            distance_km = walk_minutes / 12.0
+            return distance_km
+
+        return 3.0  # 默认3km
+
+    def _get_transport_mode_name(self, mode: TransportMode) -> str:
+        """获取交通方式显示名称"""
+        names = {
+            TransportMode.WALK: "步行",
+            TransportMode.BIKE: "骑行",
+            TransportMode.CAR: "驾车",
+            TransportMode.TAXI: "打车",
+            TransportMode.PUBLIC: "公共交通",
+            TransportMode.MIXED: "混合交通",
+        }
+        return names.get(mode, "步行")
 
     def _time_to_minutes(self, time_str: str) -> int:
         """时间转分钟"""
