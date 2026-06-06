@@ -99,21 +99,28 @@ body{font-family:var(--font);background:var(--bg-deep);color:var(--text-primary)
 .typing{display:flex;align-items:center;gap:12px;padding:10px 0;animation:msgIn .3s ease-out}
 .typing-dots{display:flex;gap:4px}.typing-dots span{width:6px;height:6px;border-radius:50%;background:var(--gold);animation:typingBounce 1.4s ease-in-out infinite}.typing-dots span:nth-child(2){animation-delay:.2s}.typing-dots span:nth-child(3){animation-delay:.4s}@keyframes typingBounce{0%,80%,100%{opacity:.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-6px)}}
 .toast{position:fixed;top:20px;right:20px;z-index:100;padding:12px 20px;border-radius:var(--radius-md);font-size:13px;box-shadow:var(--shadow-md);animation:toastIn .3s ease-out;pointer-events:none}.toast.success{background:rgba(60,184,120,.15);border:1px solid rgba(60,184,120,.2);color:var(--green)}.toast.error{background:rgba(224,85,106,.1);border:1px solid rgba(224,85,106,.2);color:var(--red)}@keyframes toastIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+.adjust-comp{background:rgba(212,175,55,.05);border:1px solid var(--gold-border);border-radius:var(--radius-md);padding:12px 14px;margin-top:8px}
+.adjust-comp .chg{font-size:12px;color:var(--text-secondary);padding:4px 0}
+.adjust-title{font-size:13px;font-weight:600;color:var(--gold-light);margin-bottom:8px}
+.header-info{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--text-muted)}
+.header-info .round{color:var(--gold-light);font-weight:600}
+.header-info .reset-btn{font-size:11px;padding:3px 10px;border-radius:12px;background:0;border:1px solid rgba(255,255,255,0.1);color:var(--text-muted);cursor:pointer;transition:all var(--transition)}.header-info .reset-btn:hover{color:var(--text-primary);border-color:rgba(255,255,255,0.2)}
 @media(max-width:768px){.plan-stats{grid-template-columns:repeat(2,1fr)}.insights-grid{grid-template-columns:1fr}.chat,.input-area{padding-left:12px;padding-right:12px}}
 </style>
 </head>
 <body>
 <div class="bg-layer"><div class="bg-orb bg-orb-1"></div><div class="bg-orb bg-orb-2"></div><div class="bg-orb bg-orb-3"></div></div>
 <div class="app">
-<header class="header"><div class="logo"><div class="logo-diamond">&#9670;</div><div class="logo-text">Smart<span class="logo-highlight">Route</span> Agent</div></div><div class="header-badge">DeepSeek &middot; 6-Agent</div></header>
+<header class="header"><div class="logo"><div class="logo-diamond">&#9670;</div><div class="logo-text">Smart<span class="logo-highlight">Route</span> Agent</div></div><div class="header-info"><span class="round" id="roundDisplay">第 1 轮</span><button class="reset-btn" onclick="resetSession()" title="开始新对话">↻ 重置</button><div class="header-badge">DeepSeek &middot; 6-Agent</div></div></header>
 <div class="chat" id="chat">
 <div class="welcome" id="welcome"><div class="welcome-icon">&#8962;</div><div class="welcome-title">探索你的专属旅程</div><div class="welcome-sub">用自然语言描述出行计划，AI 将为你生成含 UGC 洞察与个性化推荐的完整路线方案，支持实时调整。</div>
 <div class="welcome-chips"><div class="welcome-chip" data-query="明天带父母去西湖玩，妈妈腿脚不太好，预算500吃杭帮菜">&#128106; 家庭出游·西湖</div><div class="welcome-chip" data-query="周六和女朋友约会，想去杭州西湖边浪漫一点的地方，吃顿好的，预算300">&#128150; 情侣约会</div><div class="welcome-chip" data-query="周末一个人逛杭州，喜欢小众景点和文化体验，不想排队，预算200">&#127748; 小众探索</div></div></div></div>
 <div class="input-area"><div class="input-wrapper"><textarea class="chat-input" id="chatInput" rows="1" placeholder="描述你的出行需求，或对方案提出调整..."></textarea><button class="send-btn" id="sendBtn" onclick="sendMessage()">&#8593;</button></div></div></div>
 <script>
 const chat=document.getElementById('chat'),input=document.getElementById('chatInput'),sendBtn=document.getElementById('sendBtn');
-let sessionId='sess_'+Date.now(),isProcessing=false,currentStage=null,streamTextEl=null,hasActivePlan=false;
+let sessionId='sess_'+Date.now(),isProcessing=false,currentStage=null,streamTextEl=null,hasActivePlan=false,roundCount=0;
 document.querySelectorAll('.welcome-chip').forEach(c=>c.addEventListener('click',()=>{input.value=c.dataset.query;sendMessage()}));
+document.getElementById('chat').addEventListener('click',e=>{const chip=e.target.closest('.welcome-chip');if(chip){input.value=chip.dataset.query;sendMessage()}});
 input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,120)+'px'});
 input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}});
 function scrollBottom(){setTimeout(()=>{chat.scrollTop=chat.scrollHeight},80)}
@@ -133,7 +140,7 @@ function showToast(type,text){const t=document.createElement('div');t.className=
 
 async function sendMessage(){
   const query=input.value.trim();if(!query||isProcessing)return;
-  isProcessing=true;sendBtn.disabled=true;input.value='';input.style.height='auto';currentStage=null;streamTextEl=null;
+  isProcessing=true;sendBtn.disabled=true;input.value='';input.style.height='auto';currentStage=null;streamTextEl=null;roundCount++;
   chat.querySelectorAll('.stage-dot').forEach(d=>d.classList.remove('done'));addUserMsg(query);showTyping();
   try{
     const ep=hasActivePlan?'/api/v1/route/adjust/stream':'/api/v1/route/plan/stream';
@@ -158,8 +165,10 @@ function handleClarify(msg){addAgentCard(`<div style="font-size:14px;color:var(-
 function handleIntentCard(i){if(i)addAgentCard(makeIntentCard(i))}
 function handleCandidates(cs){if(cs&&cs.length)addAgentCard(makePOIList(cs))}
 function handleInsights(eps){if(eps&&eps.length)addAgentCard(makeInsightsGrid(eps))}
-function handleStructured(msg){hasActivePlan=true;const plans=msg.plans||[],cmp=msg.plan_comparison,hints=msg.adjustable_hints||[];let h='';if(plans.length){h+='<div style="font-size:13px;font-weight:600;color:var(--text-secondary);margin:8px 0 4px">📋 路线方案</div>'+makePlanCards(plans)}if(cmp)h+=makeComparison(cmp);if(hints.length)h+=makeHints(hints);h+='<div style="font-size:12px;color:var(--text-muted);margin-top:12px;padding:10px;background:rgba(255,255,255,.015);border-radius:8px;border:1px solid var(--border-subtle)">💬 <b>对方案不满意？</b>在下方输入框中提出调整要求</div>';if(h)addAgentCard(h);chat.querySelectorAll('.stage-dot').forEach(d=>d.classList.add('done'));showToast('success',`生成 ${plans.length} 套方案`)}
-function finishFlow(){isProcessing=false;sendBtn.disabled=false;chat.querySelectorAll('.stage-dot').forEach(d=>d.classList.add('done'));input.placeholder=hasActivePlan?'对方案提出调整...':'描述你的出行需求...'}
+function handleStructured(msg){hasActivePlan=true;const plans=msg.plans||[],cmp=msg.plan_comparison,hints=msg.adjustable_hints||[],adj=msg.adjust_comparison;let h='';if(adj){h+=makeAdjustComparison(adj)}if(plans.length){h+='<div style="font-size:13px;font-weight:600;color:var(--text-secondary);margin:8px 0 4px">📋 '+(adj?'调整后方案':'路线方案')+'</div>'+makePlanCards(plans)}if(cmp)h+=makeComparison(cmp);if(hints.length)h+=makeHints(hints);h+='<div style="font-size:12px;color:var(--text-muted);margin-top:12px;padding:10px;background:rgba(255,255,255,.015);border-radius:8px;border:1px solid var(--border-subtle)">💬 <b>对方案不满意？</b>试试说：<span style="color:var(--gold-light)">"换成便宜点的餐厅"</span> <span style="color:var(--text-muted)">|</span> <span style="color:var(--gold-light)">"加入一个下午茶"</span> <span style="color:var(--text-muted)">|</span> <span style="color:var(--gold-light)">"提前到5点结束"</span> <span style="color:var(--text-muted)">|</span> <span style="color:var(--gold-light)">"加入购物"</span></div>';if(h)addAgentCard(h);chat.querySelectorAll('.stage-dot').forEach(d=>d.classList.add('done'));showToast('success',adj?'方案已调整':`生成 ${plans.length} 套方案`)}
+function makeAdjustComparison(adj){if(!adj||!adj.changes)return'';return `<div class="adjust-comp"><div class="adjust-title">📊 调整对比 — "${esc(adj.adjust_query||'')}"</div>${adj.changes.map(c=>`<div class="chg">${c}</div>`).join('')}</div>`}
+function finishFlow(){isProcessing=false;sendBtn.disabled=false;chat.querySelectorAll('.stage-dot').forEach(d=>d.classList.add('done'));document.getElementById('roundDisplay').textContent='第 '+roundCount+' 轮';input.placeholder=hasActivePlan?'试试："换成便宜点的" "加入下午茶" "提前到5点" ...':'描述你的出行需求...'}
+function resetSession(){sessionId='sess_'+Date.now();hasActivePlan=false;roundCount=0;document.getElementById('roundDisplay').textContent='第 1 轮';chat.innerHTML='<div class="welcome" id="welcome"><div class="welcome-icon">&#8962;</div><div class="welcome-title">探索你的专属旅程</div><div class="welcome-sub">用自然语言描述出行计划，AI 将为你生成含 UGC 洞察与个性化推荐的完整路线方案，支持实时调整。</div><div class="welcome-chips"><div class="welcome-chip" data-query="明天带父母去西湖玩，妈妈腿脚不太好，预算500吃杭帮菜">&#128106; 家庭出游·西湖</div><div class="welcome-chip" data-query="周六和女朋友约会，想去杭州西湖边浪漫一点的地方，吃顿好的，预算300">&#128150; 情侣约会</div><div class="welcome-chip" data-query="周末一个人逛杭州，喜欢小众景点和文化体验，不想排队，预算200">&#127748; 小众探索</div></div></div>';input.style.height='auto';input.placeholder='描述你的出行需求...';showToast('success','对话已重置')}
 </script>
 </body>
 </html>
